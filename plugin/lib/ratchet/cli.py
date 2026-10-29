@@ -267,8 +267,16 @@ def cmd_tamper(args) -> int:
     root = require_root()
     h = harness.load(root)
     tree, since = gitstate.tree_id(root), verify.default_base_tree(root, h)
+    harness_task, exempt = False, frozenset()
+    if args.task:
+        run, task = _task_base(root, tasks.run_id(root, args.run), args.task)
+        since = task.get("start_tree") or since
+        harness_task = task.get("kind") == "harness"
+    else:
+        run = tasks.load_run(root, tasks.run_id(root, args.run))
+        exempt = tasks.harness_paths(root, run)
     allowed = tamper.allowances(root)
-    found = tamper.scan(root, h, since, tree)
+    found = tamper.scan(root, h, since, tree, harness_task, exempt)
     data = [dict(asdict(f), allowed=f.id in allowed, reason=(allowed.get(f.id) or {}).get("reason")) for f in found]
     text = [f"[{d['id']}] {'ALLOWED ' if d['allowed'] else ''}{d['kind']}: {d['file']}:{d['line']}  {d['text'][:120]}"
             + (f"\n    reason: {d['reason']}" if d["allowed"] else "") for d in data] or ["no tamper findings"]
@@ -391,7 +399,7 @@ def cmd_run(args) -> int:
         if val == "accept":
             h = harness.load(root)
             base = verify.commit_tree(root, run.get("base_sha") or "HEAD")
-            v = verify.verify(root, h, level="full", base_tree=base)
+            v = verify.verify(root, h, level="full", base_tree=base, exempt=tasks.harness_paths(root, run))
             if not v.ok:
                 raise RatchetError("full checks are red against the run's base; the run can't be accepted:\n"
                                    + verify.format_verdict(v))
@@ -733,7 +741,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-ratio", type=float)
     sp = add("affected", cmd_affected, "changed files, triggered checks and touched products")
     sp.add_argument("--json", action="store_true")
-    sp = add("tamper", cmd_tamper, "check-weakening changes on this branch")
+    sp = add("tamper", cmd_tamper, "check-weakening changes on this branch (or in one task with --task)")
+    sp.add_argument("--task")
+    sp.add_argument("--run")
     sp.add_argument("--json", action="store_true")
     sp = add("allow", cmd_allow, "accept a tamper finding (or a removed/skipped test) with a reason")
     sp.add_argument("ids", nargs="*")

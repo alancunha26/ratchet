@@ -327,6 +327,18 @@ def release_thread(root: Path, rid: str, thread: str, reason: str) -> str:
     return "nothing"
 
 
+def harness_paths(root: Path, run: Optional[dict]) -> frozenset:
+    """Paths changed by this run's accepted/merged harness tasks: reviewed changes to protected files."""
+    from .util import git_ok
+
+    paths: set = set()
+    for t in (run or {}).get("tasks", []):
+        if t.get("kind") == "harness" and t.get("status") in ("accepted", "done") and t.get("start_sha") and t.get("end_sha"):
+            out = git_ok(["diff", "--name-only", t["start_sha"], t["end_sha"]], root) or ""
+            paths.update(p for p in out.splitlines() if p)
+    return frozenset(paths)
+
+
 def summary(run: dict) -> str:
     counts: dict = {}
     for t in run["tasks"]:
@@ -363,7 +375,8 @@ def format_task(task: dict) -> str:
     if task.get("evidence"):
         lines.append("evidence:")
         lines += [f"  - {e['path']}{' — ' + e['note'] if e.get('note') else ''}" for e in task["evidence"]]
-    if task.get("notes"):
+    notes = [n for n in task.get("notes") or [] if n["by"] != "submit"]  # the summary already shows it
+    if notes:
         lines.append("notes:")
-        lines += [f"  - [{n['by']}] {n['text']}" for n in task["notes"][-6:]]
+        lines += [f"  - [{n['by']}] {n['text']}" for n in notes[-6:]]
     return "\n".join(lines)

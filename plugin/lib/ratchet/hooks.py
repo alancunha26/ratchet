@@ -94,7 +94,11 @@ def _gate(payload: dict, key: str, enforce_if_unchanged: bool) -> None:
         _debug("session changed nothing")
         return  # this session changed nothing; don't hold a read-only session hostage
     limit = int(cfg["limits"]["gate_attempts"])
-    rep = verify.verify(root, cfg, level="fast", base_tree=since)  # results are cached per tree
+    try:
+        exempt = tasks.harness_paths(root, tasks.load_run(root, tasks.run_id(root)))
+    except Exception:
+        exempt = frozenset()
+    rep = verify.verify(root, cfg, level="fast", base_tree=since, exempt=exempt)  # results are cached per tree
     sess.update({"last_tree": tree, "last_ok": rep.ok})
 
     if rep.ok:

@@ -46,8 +46,10 @@ def _glob_match(path: str, pattern: str) -> bool:
     return glob_match(path, pattern)
 
 
-def scan(root: Path, cfg: dict, since: str, tree: str, harness_task: bool = False) -> list[Finding]:
-    """harness_task: the change is a reviewed harness task, so protected harness files may change."""
+def scan(root: Path, cfg: dict, since: str, tree: str, harness_task: bool = False,
+         exempt: frozenset = frozenset()) -> list[Finding]:
+    """harness_task: the change is a reviewed harness task, so protected harness files may change.
+    exempt: protected paths already changed by accepted harness tasks of this run (run-level gates)."""
     findings: list[Finding] = []
     protect = [] if harness_task else (cfg.get("protect") or [])
     ignore = cfg.get("tamper_ignore") or []
@@ -56,7 +58,7 @@ def scan(root: Path, cfg: dict, since: str, tree: str, harness_task: bool = Fals
             continue
         if ch.status == "D" and TEST_PATH.search(ch.path):
             findings.append(Finding(short_hash("deleted-test", ch.path), "deleted test file", ch.path, 0, ch.path))
-        if any(_glob_match(ch.path, g) for g in protect):
+        if ch.path not in exempt and any(_glob_match(ch.path, g) for g in protect):
             findings.append(Finding(short_hash("protected", ch.path, ch.status), "protected path changed",
                                     ch.path, 0, f"{ch.status} {ch.path}"))
     for added in gitstate.added_lines(root, since, tree):
@@ -81,9 +83,10 @@ def allowances(root: Path) -> dict:
     return read_json(_allow_path(root), {}) or {}
 
 
-def unallowed(root: Path, cfg: dict, since: str, tree: str, harness_task: bool = False) -> list[Finding]:
+def unallowed(root: Path, cfg: dict, since: str, tree: str, harness_task: bool = False,
+              exempt: frozenset = frozenset()) -> list[Finding]:
     allowed = allowances(root)
-    return [f for f in scan(root, cfg, since, tree, harness_task) if f.id not in allowed]
+    return [f for f in scan(root, cfg, since, tree, harness_task, exempt) if f.id not in allowed]
 
 
 def allow(root: Path, cfg: dict, ids: list[str], reason: str, allow_all: bool = False) -> list[Finding]:

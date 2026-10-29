@@ -413,6 +413,14 @@ class CycleTest(unittest.TestCase):
         self.repo.write(".ratchet/harness.json", json.dumps(h))
         self.repo.commit("add lint")
         r("task", "submit", "T2", "--summary", "lint check added", check=True)
+        r("task", "accept", "T2", "--notes", "ok", check=True)
+        r("task", "merge", "T2", check=True)
+        # run level: the reviewed harness change is exempt; nothing else touched protected paths
+        r("run", "final", "accept", "--notes", "ok", check=True)
+        self.assertEqual(r("tamper").returncode, 0)
+        self.repo.write("t3.json", "{}\n")  # a protected change no harness task made
+        self.repo.commit("sneak")
+        self.assertIn("protected path changed", r("tamper").stdout)
 
     def test_judge_panel_and_report(self) -> None:
         h = self.repo.harness()

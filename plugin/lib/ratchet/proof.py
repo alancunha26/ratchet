@@ -93,17 +93,27 @@ def _mutants_for(path: str, lineno: int, text: str) -> list[tuple]:
     return out
 
 
+NOT_CODE = (".md", ".json", ".yml", ".yaml", ".toml", ".lock", ".txt", ".sh", ".cfg", ".ini", ".csv", ".svg",
+            ".html", ".css")
+
+
+def _mutable(path: str) -> bool:
+    """Source code only: never tests, the harness itself, config, docs or scripts."""
+    return not (is_test_path(path) or path.startswith(".ratchet/") or path.endswith(NOT_CODE)
+                or path in ("t3.json", "AGENTS.md", "CLAUDE.md"))
+
+
 def _candidates_changed(root: Path, start: str) -> list[tuple]:
     out = []
     for a in gitstate.added_lines(root, start, "HEAD"):
-        if not is_test_path(a.path):
+        if _mutable(a.path):
             out += _mutants_for(a.path, a.line, a.text)[:2]
     return out
 
 
 def _candidates_existing(root: Path, globs: list, rng: random.Random) -> list[tuple]:
     files = [f for f in git(["ls-files"], root).splitlines()
-             if not is_test_path(f) and any(harness.glob_match(f, g) for g in globs)]
+             if _mutable(f) and any(harness.glob_match(f, g) for g in globs)]
     rng.shuffle(files)
     out = []
     for f in files[:40]:

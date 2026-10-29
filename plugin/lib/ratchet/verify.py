@@ -135,7 +135,7 @@ def _run(root: Path, h: dict, check: harness.Check, tree: str, use_cache: bool) 
 
 
 def verify(root: Path, h: dict, *, level: str = "fast", base_tree: Optional[str] = None, all_checks: bool = False,
-           harness_task: bool = False, use_cache: bool = True) -> Verdict:
+           harness_task: bool = False, use_cache: bool = True, exempt: frozenset = frozenset()) -> Verdict:
     started = time.time()
     tree = gitstate.tree_id(root)
     base_tree = base_tree or default_base_tree(root, h)
@@ -166,7 +166,7 @@ def verify(root: Path, h: dict, *, level: str = "fast", base_tree: Optional[str]
         cv.cached = cached
         verdicts.append(cv)
     since = base_tree
-    findings = tamper.unallowed(root, h, since, tree, harness_task) if base_tree != tree else []
+    findings = tamper.unallowed(root, h, since, tree, harness_task, exempt) if base_tree != tree else []
     v = Verdict(all(c.ok for c in verdicts) and not findings, tree, base_tree, level, changed, verdicts,
                 [asdict(f) for f in findings], round(time.time() - started, 2), now())
     write_json(state_dir(root) / "verdicts" / f"{tree[:16]}-{base_tree[:12]}-{level}.json", asdict(v))
