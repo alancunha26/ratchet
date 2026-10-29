@@ -7,7 +7,7 @@ from typing import Any
 
 from .util import RatchetError, read_json
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # Check specs, per package kind:
 #   "script:NAME"  run the package.json script NAME if the package defines it (node only)
@@ -50,10 +50,27 @@ DEFAULTS: dict[str, Any] = {
         "parallel_jobs": 4,
         "machine_slots": 2,
         "check_timeout_sec": 900,
+        "worker_attempts": 3,
     },
     "gate": {"enabled": True, "level": "fast", "tamper": True},
     "judge": {"model": "inherit"},
-    "run": {"pr": "draft", "max_parallel": 1},
+    "run": {"pr": "draft"},
+    # How the coordinator uses T3 Code: every worker and judge is its own T3 thread.
+    "t3": {
+        "max_parallel": 2,
+        "contract_review": True,
+        "worker": {"model": None, "provider": None, "isolation": "worktree"},
+        "judge": {"model": None, "provider": None},
+    },
+    # How agents run the product (the judge drives it in T3's built-in browser).
+    "app": {
+        "dev": None,
+        "url": "http://localhost:{port}",
+        "port_env": "PORT",
+        "ready_text": None,
+        "profile": None,
+        "ui_paths": ["**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.css", "**/*.scss", "**/*.html"],
+    },
 }
 
 

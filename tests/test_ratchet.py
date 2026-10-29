@@ -55,8 +55,8 @@ class Fixture:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
 
-    def ratchet(self, *args: str, stdin: str = "", check: bool = False) -> subprocess.CompletedProcess:
-        proc = subprocess.run([sys.executable, str(BIN), *args], cwd=self.root, env=self.env, input=stdin,
+    def ratchet(self, *args: str, stdin: str = "", check: bool = False, cwd: Path = None) -> subprocess.CompletedProcess:
+        proc = subprocess.run([sys.executable, str(BIN), *args], cwd=cwd or self.root, env=self.env, input=stdin,
                               text=True, capture_output=True)
         if check and proc.returncode != 0:
             raise AssertionError(f"ratchet {' '.join(args)} failed:\n{proc.stdout}\n{proc.stderr}")
@@ -164,6 +164,8 @@ class RatchetTest(unittest.TestCase):
         self.assertEqual(json.loads(r("task", "show", "T1", "--json").stdout)["status"], "doing")
         r("task", "submit", "T1", "--summary", "added test", check=True)
         r("task", "accept", "T1", "--notes", "criterion 1: verified", check=True)
+        self.assertEqual(r("task", "next").stdout.strip(), "nothing ready")  # T2 waits for the merge
+        r("task", "merge", "T1", check=True)
         self.assertEqual(r("task", "next").stdout.strip(), "T2 app uses v2")
         r("task", "edit", "T2", "--from-json", json.dumps({"criteria": ["app prints core2", "app test asserts it"]}),
           check=True)
@@ -233,6 +235,166 @@ class RatchetTest(unittest.TestCase):
             proc = subprocess.run([sys.executable, str(BIN), "hook", "stop"], input=json.dumps({"cwd": d}),
                                   text=True, capture_output=True)
             self.assertEqual((proc.returncode, proc.stdout), (0, ""))
+
+
+class OrchestrationTest(unittest.TestCase):
+    """Drive the coordinator state machine the way T3 threads would, with real worktrees."""
+
+    def setUp(self) -> None:
+        self.f = Fixture()
+        self.r = self.f.ratchet
+        self.r("run", "start", "--goal", "ship v2", check=True)
+        self.r("task", "add", "--from-json", "-", check=True, stdin=json.dumps([
+            {"title": "core v2", "criteria": ["core exports v2"], "packages": ["packages/core"]},
+            {"title": "other v2", "criteria": ["other exports v2"], "packages": ["packages/other"]},
+            {"title": "app v2", "criteria": ["app uses v2"], "deps": ["T1"]},
+        ]))
+
+    def tearDown(self) -> None:
+        self.f.close()
+
+    def tick(self) -> list:
+        return json.loads(self.r("tick", "--json", check=True).stdout)["actions"]
+
+    def worktree(self, name: str, ref: str, detach: bool = False) -> Path:
+        path = Path(self.f.tmp.name) / name
+        flag = f"--detach {path} {ref}" if detach else f"-b {name} {path} {ref}"
+        sh(f"git worktree add -q {flag}", self.f.root)
+        return path
+
+    def work(self, tid: str, wt: Path, rel: str, text: str) -> str:
+        self.r("task", "start", tid, "--run", "feature", check=True, cwd=wt)
+        (wt / rel).write_text(text)
+        sh(f"git add -A && git commit -qm '{tid}'", wt)
+        self.r("task", "submit", tid, "--run", "feature", "--summary", "done", check=True, cwd=wt)
+        return sh("git rev-parse HEAD", wt).strip()
+
+    def test_full_run_through_t3_style_threads(self) -> None:
+        acts = self.tick()
+        self.assertEqual([(a["do"], a.get("mode")) for a in acts], [("dispatch_judge", "contract")])
+        self.r("run", "dispatch", "contract", "--thread", "c1", check=True)
+        self.assertEqual(self.tick()[0]["do"], "wait")
+        self.r("run", "contract", "ok", "--notes", "testable", check=True)
+
+        # Two disjoint tasks go out in parallel; T3 waits for T1 to merge.
+        acts = self.tick()
+        self.assertEqual([(a["do"], a.get("task")) for a in acts], [("dispatch_worker", "T1"), ("dispatch_worker", "T2")])
+        self.assertEqual(acts[0]["isolation"], "worktree")
+        brief = self.r("brief", "worker", "T1", "--run", "feature", check=True).stdout
+        self.assertIn(str(BIN), brief)
+        self.assertIn("core exports v2", brief)
+        self.assertIn("RATCHET T1 submitted", brief)
+        self.r("task", "dispatch", "T1", "--role", "worker", "--thread", "w1", check=True)
+        self.r("task", "dispatch", "T2", "--role", "worker", "--thread", "w2", check=True)
+        self.assertEqual([a["do"] for a in self.tick()], ["wait"])
+
+        # T1's worker submits from its own worktree; T2's worker dies without submitting.
+        wt1 = self.worktree("t1", "feature")
+        sha1 = self.work("T1", wt1, "packages/core/index.js", "module.exports = 'v2';\n")
+        self.assertIn("T2 worker", self.r("release", "--thread", "w2", "--reason", "crashed", check=True).stdout)
+        self.assertEqual(self.r("release", "--thread", "w1", "--reason", "done").stdout.strip(), "released: nothing")
+        acts = self.tick()
+        self.assertEqual([(a["do"], a.get("task")) for a in acts], [("dispatch_judge", "T1"), ("dispatch_worker", "T2")])
+        judge_brief = self.r("brief", "judge", "T1", "--run", "feature", check=True).stdout
+        self.assertIn(f"git checkout --detach {sha1}", judge_brief)
+        self.assertIn("preview_open", judge_brief)
+        self.assertIn("Judge calibration", judge_brief)
+
+        # The judge accepts from a detached checkout of the submitted commit.
+        self.r("task", "dispatch", "T1", "--role", "judge", "--thread", "j1", check=True)
+        wtj = self.worktree("j1", sha1, detach=True)
+        shot = Path(self.f.tmp.name) / "shot.png"
+        shot.write_bytes(b"\x89PNG fake")
+        self.r("evidence", "add", "T1", str(shot), "--run", "feature", "--note", "criterion 1", check=True, cwd=wtj)
+        self.r("task", "accept", "T1", "--run", "feature", "--by", "judge", "--notes", "1. PASS", check=True, cwd=wtj)
+        self.assertEqual(self.f.hook("stop", cwd=str(wtj)), {})  # detached review checkout: no gate
+
+        # Merge into the run branch, then T3 (no declared packages) waits for T2's worker to finish.
+        acts = self.tick()
+        self.assertEqual(acts[0]["do"], "merge")
+        self.r("task", "merge", "T1", check=True)
+        self.r("task", "dispatch", "T2", "--role", "worker", "--thread", "w2b", check=True)
+        self.assertEqual([a["do"] for a in self.tick()], ["wait"])
+
+        wt2 = self.worktree("t2", "feature")
+        self.work("T2", wt2, "packages/other/index.js", "module.exports = 'other v2';\n")
+        for tid, n in (("T2", "j2"),):
+            self.r("task", "dispatch", tid, "--role", "judge", "--thread", n, check=True)
+            self.r("task", "accept", tid, "--run", "feature", "--notes", "ok", check=True, cwd=wt2)
+            self.r("task", "merge", tid, check=True)
+        self.assertEqual([(a["do"], a.get("task")) for a in self.tick()], [("dispatch_worker", "T3")])
+        self.r("task", "dispatch", "T3", "--role", "worker", "--thread", "w3", check=True)
+        wt3 = self.worktree("t3", "feature")
+        self.work("T3", wt3, "packages/app/index.js", "module.exports = require('../core');\n")
+        self.r("task", "dispatch", "T3", "--role", "judge", "--thread", "j3", check=True)
+        self.r("task", "accept", "T3", "--run", "feature", "--notes", "ok", check=True, cwd=wt3)
+        self.r("task", "merge", "T3", check=True)
+
+        # Final review, PR, CI red → fix round → green.
+        self.assertEqual(self.tick()[0].get("mode"), "final")
+        self.assertIn("Tasks, all accepted", self.r("brief", "final", "--run", "feature", check=True).stdout)
+        self.r("run", "dispatch", "final", "--thread", "f1", check=True)
+        self.r("run", "final", "accept", "--notes", "goal met", check=True)
+        self.assertEqual(self.tick()[0]["do"], "open_pr")
+        self.r("run", "pr", "https://github.com/x/y/pull/1", check=True)
+        self.assertEqual(self.tick()[0]["do"], "watch_ci")
+        self.r("run", "ci", "red", "--details", "lint job failed", check=True)
+        self.assertEqual(self.tick()[0]["do"], "fix_ci")
+        self.r("run", "ci", "fixing", check=True)
+        self.assertEqual(self.tick()[0]["do"], "fix_ci")  # nothing added yet
+        self.r("task", "add", "--title", "fix lint", "--criteria", "lint job passes", check=True)
+        self.r("task", "dispatch", "T4", "--role", "worker", "--thread", "w4", check=True)
+        wt4 = self.worktree("t4", "feature")
+        self.work("T4", wt4, "packages/app/README.md", "lint fixed\n")
+        self.r("task", "dispatch", "T4", "--role", "judge", "--thread", "j4", check=True)
+        self.r("task", "accept", "T4", "--run", "feature", "--notes", "ok", check=True, cwd=wt4)
+        self.assertEqual(self.tick()[0]["do"], "merge")
+        self.r("task", "merge", "T4", check=True)
+        self.assertEqual(self.tick()[0]["do"], "push")
+        self.r("run", "pushed", check=True)
+        self.r("run", "ci", "green", check=True)
+        self.assertEqual(self.tick()[0]["do"], "report")
+
+        html_out = self.r("report", "--html", check=True).stdout
+        self.assertIn("ship v2", html_out)
+        self.assertIn("01-shot.png", html_out)
+        self.assertIn("| T1 core v2 | done |", self.r("report", check=True).stdout)
+
+    def test_merge_conflict_sends_task_back_with_resume_point(self) -> None:
+        self.r("run", "contract", "ok", check=True)
+        for tid in ("T1", "T2"):
+            self.r("task", "dispatch", tid, "--role", "worker", "--thread", f"w{tid}", check=True)
+        a, b = self.worktree("ca", "feature"), self.worktree("cb", "feature")
+        self.work("T1", a, "packages/core/index.js", "module.exports = 'A';\n")
+        sha_b = self.work("T2", b, "packages/core/index.js", "module.exports = 'B';\n")
+        for tid, wt in (("T1", a), ("T2", b)):
+            self.r("task", "dispatch", tid, "--role", "judge", "--thread", f"j{tid}", check=True)
+            self.r("task", "accept", tid, "--run", "feature", "--notes", "ok", check=True, cwd=wt)
+        self.r("task", "merge", "T1", check=True)
+        proc = self.r("task", "merge", "T2")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("merge conflict", proc.stdout)
+        self.assertEqual(sh("git status --porcelain", self.f.root).strip(), "")  # merge aborted cleanly
+        acts = self.tick()
+        self.assertEqual([(x["do"], x.get("task")) for x in acts], [("dispatch_worker", "T2")])
+        self.assertIn(f"git merge --no-edit {sha_b}", self.r("brief", "worker", "T2", check=True).stdout)
+
+    def test_git_output_with_non_utf8_bytes_does_not_crash(self) -> None:
+        (self.f.root / "packages/core/blob.dat").write_bytes(b"\x89PNG not really binary\n")
+        self.assertEqual(self.r("tamper").returncode, 0)
+
+    def test_worker_attempts_limit_blocks_and_escalates(self) -> None:
+        self.r("run", "contract", "ok", check=True)
+        for i in range(3):
+            self.r("task", "dispatch", "T2", "--role", "worker", "--thread", f"w{i}", check=True)
+            self.r("release", "--thread", f"w{i}", "--reason", "no submit", check=True)
+        self.assertEqual(json.loads(self.r("task", "show", "T2", "--json").stdout)["status"], "blocked")
+        self.r("task", "block", "T1", "--reason", "needs a human decision", check=True)
+        acts = self.tick()
+        self.assertEqual(acts[0]["do"], "escalate")
+
+    def test_port_is_free_number(self) -> None:
+        self.assertTrue(1024 < int(self.r("port", check=True).stdout) < 65536)
 
 
 class DiscoveryTest(unittest.TestCase):

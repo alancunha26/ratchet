@@ -1,7 +1,7 @@
 {
   "name": "ratchet",
   "displayName": "Ratchet",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A verification loop for coding agents: deterministic gates on changed packages, a skeptical judge, task state on disk, and a gardener that turns friction into harness fixes.",
   "author": { "name": "Alan Cunha", "url": "https://github.com/Cosmyk-Labs" },
   "repository": "https://github.com/Cosmyk-Labs/ratchet",

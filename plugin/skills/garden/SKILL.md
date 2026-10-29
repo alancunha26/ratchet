@@ -1,6 +1,6 @@
 ---
 name: garden
-description: Improve the ratchet harness from its own telemetry. Fixes slow or flaky checks, missing tools, unclear rules and judge misjudgments, and turns repeated lessons into lint rules, tests or CLAUDE.md lines. Use on a schedule, or when asked to garden or tune the loop.
+description: Improve the ratchet harness from its own telemetry. Fixes slow or flaky checks, missing tools, unclear rules, judge misjudgments and merge conflicts, and turns repeated lessons into lint rules, tests or CLAUDE.md lines. Runs as a weekly T3 scheduled task, or when asked to garden or tune the loop.
 ---
 
 # Ratchet gardener
@@ -28,13 +28,15 @@ Order the friction by frequency × time lost, and take the top three to five ite
 | Repeated reject reason or review comment | Encode it as a lint rule, structural test or type. Use a one-line `CLAUDE.md` rule only when it can't be made mechanical. |
 | Judge misjudged (accepted broken work or rejected good work) | Add a dated line under "Past misjudgments" in `.ratchet/judge.md`. |
 | Recurring scope creep or placeholder output | Sharpen the repo's `CLAUDE.md` ratchet section. |
+| Frequent merge conflicts (`merge_conflicts` in stats) | Make tasks declare tighter `packages`, or lower `t3.max_parallel`. |
+| Workers dying without submitting (`worker_releases`) | Read those threads with `t3_thread_read` and fix the cause: setup, context, or tasks that are too large. |
 
 ## 4. Ship it
 
-Ship the fixes as a normal ratchet run, following `ratchet:run`:
-- branch `ratchet/garden-<yyyy-mm-dd>`;
+Ship the fixes as a normal ratchet run by invoking `ratchet:run` with the goal "harness fixes: <list>":
+- it hands this thread off to a `ratchet/garden-<yyyy-mm-dd>` worktree;
 - one task per fix;
-- the judge reviews each one.
+- a judge thread reviews each one.
 
 Changes to protected paths need `ratchet allow <id> --reason "garden: <why>"`.
 

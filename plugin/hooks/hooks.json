@@ -1,24 +1,25 @@
 {
-  "description": "ratchet: session context, the Stop/SubagentStop verification gate, and protection of ratchet state",
+  "description": "ratchet: session context, the Stop verification gate, and protection of ratchet state",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ratchet\" hook session-start", "timeout": 30 }
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ratchet\" hook session-start",
+            "timeout": 30
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ratchet\" hook stop", "timeout": 1800 }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ratchet\" hook subagent-stop", "timeout": 1800 }
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ratchet\" hook stop",
+            "timeout": 1800
+          }
         ]
       }
     ],
@@ -26,7 +27,11 @@
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ratchet\" hook pre-edit", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/ratchet\" hook pre-edit",
+            "timeout": 10
+          }
         ]
       }
     ]

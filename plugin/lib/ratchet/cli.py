@@ -9,7 +9,7 @@ from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
-from . import blockers, checks, config, gitstate, hooks, scaffold, tamper, tasks, workspace
+from . import blockers, checks, config, gitstate, hooks, orchestrate, report, scaffold, tamper, tasks, workspace
 from .config import VERSION
 from .util import RatchetError, git, read_jsonl, require_root, state_dir
 
@@ -71,30 +71,81 @@ def cmd_allow(args) -> int:
 def cmd_run(args) -> int:
     root = require_root()
     rid = tasks.run_id(root, args.run)
-    if args.action == "start":
+    act, val, notes = args.action, args.value, args.text or ""
+    if act == "start":
         if not args.goal:
             raise RatchetError("--goal is required")
         run = tasks.start_run(root, rid, args.goal)
         print(f"run {run['id']} active on {run['branch']}: {run['goal']}")
-    elif args.action == "close":
-        run = tasks.require_run(root, rid)
-        run["status"] = args.status
-        tasks._save(root, run)
-        tasks.progress(root, rid, f"run closed: {args.status}")
-        print(f"run {rid} {args.status}")
-    else:
-        run = tasks.require_run(root, rid)
+        return 0
+    run = tasks.require_run(root, rid)
+    if act == "show":
         text = [f"run {run['id']} [{run['status']}] on {run['branch']}", f"goal: {run['goal']}",
-                f"tasks: {tasks.summary(run)}"]
+                f"tasks: {tasks.summary(run)}", f"contract: {run.get('contract') or '-'} · final: {run.get('final') or '-'}"
+                f" · PR: {run.get('pr_url') or '-'} · CI: {(run.get('ci') or {}).get('status') or '-'}"]
         text += [f"  {t['id']} [{t['status']}] {t['title']}" for t in run["tasks"]]
         tail = tasks.read_progress(root, rid, last=8)
         if tail:
             text += ["recent progress:", tail]
         _out(args, run, "\n".join(text))
+    elif act == "dispatch":
+        if val not in ("contract", "final") or not args.thread:
+            raise RatchetError("usage: ratchet run dispatch contract|final --thread <id>")
+        tasks.set_run(root, rid, **{f"{val}_thread": args.thread})
+        tasks.progress(root, rid, f"{val} review dispatched ({args.thread})")
+        print(f"{val} review dispatched")
+    elif act == "contract":
+        if val not in ("ok", "revise"):
+            raise RatchetError("usage: ratchet run contract ok|revise --notes \"...\"")
+        tasks.set_run(root, rid, contract=val, contract_thread=None, contract_notes=notes)
+        tasks.progress(root, rid, f"contract {val}{': ' + notes[:160] if notes else ''}")
+        print(f"contract: {val}")
+    elif act == "final":
+        if val not in ("accept", "reject", "reset"):
+            raise RatchetError("usage: ratchet run final accept|reject|reset --notes \"...\"")
+        if val == "accept":
+            rep = checks.verify(root, config.load(root), level="full")
+            if not rep.ok:
+                raise RatchetError("full checks are red on this checkout; the run can't be accepted:\n"
+                                   + checks.format_report(rep))
+        state = {"accept": "accepted", "reject": "rejected", "reset": None}[val]
+        tasks.set_run(root, rid, final=state, final_thread=None, final_notes=notes)
+        tasks.progress(root, rid, f"final review {val}{': ' + notes[:160] if notes else ''}")
+        print(f"final: {state}")
+    elif act == "pr":
+        if not val:
+            raise RatchetError("usage: ratchet run pr <url>")
+        tasks.set_run(root, rid, pr_url=val, pushed_sha=git(["rev-parse", "HEAD"], root).strip(),
+                      ci={"status": "pending", "rounds": (run.get("ci") or {}).get("rounds", 0), "details": ""})
+        tasks.progress(root, rid, f"PR opened: {val}")
+        print(f"PR recorded: {val}")
+    elif act == "pushed":
+        ci = dict(run.get("ci") or {})
+        ci["status"] = "pending"
+        tasks.set_run(root, rid, pushed_sha=git(["rev-parse", "HEAD"], root).strip(), ci=ci)
+        print("pushed; CI pending")
+    elif act == "ci":
+        if val not in ("green", "red", "pending", "fixing"):
+            raise RatchetError("usage: ratchet run ci green|red|pending|fixing --details \"...\"")
+        ci = dict(run.get("ci") or {"rounds": 0})
+        if val == "fixing":
+            ci["rounds"] = int(ci.get("rounds", 0)) + 1
+            ci["status"] = "fixing"
+            tasks.set_run(root, rid, ci=ci, final="accepted")
+        else:
+            ci.update(status=val, details=args.details or ci.get("details", ""))
+            tasks.set_run(root, rid, ci=ci)
+        tasks.progress(root, rid, f"CI {val}{': ' + (args.details or '')[:160] if args.details else ''}")
+        print(f"CI: {val}")
+    elif act == "close":
+        status = val if val in ("done", "abandoned") else "done"
+        tasks.set_run(root, rid, status=status)
+        tasks.progress(root, rid, f"run closed: {status}")
+        print(f"run {rid} {status}")
     return 0
 
 
-def _task_items(args) -> list[dict]:
+def _task_items(args) -> list:
     if args.json_input is not None:
         raw = sys.stdin.read() if args.json_input == "-" else args.json_input
         data = json.loads(raw)
@@ -144,8 +195,17 @@ def cmd_task(args) -> int:
         items = _task_items(args) if args.json_input is not None else []
         if len(items) != 1 or not isinstance(items[0], dict):
             raise RatchetError("usage: ratchet task edit <id> --from-json '{\"criteria\": [...]}'")
-        task = tasks.edit_task(root, rid, args.id, items[0])
-        print(tasks.format_task(task))
+        print(tasks.format_task(tasks.edit_task(root, rid, args.id, items[0])))
+        return 0
+    if act == "merge":
+        ok, msg = orchestrate.merge(root, config.load(root), rid, args.id)
+        print(msg)
+        return 0 if ok else 1
+    if act == "dispatch":
+        if args.role not in ("worker", "judge"):
+            raise RatchetError("usage: ratchet task dispatch <id> --role worker|judge --thread <id>")
+        task = tasks.transition(root, rid, args.id, f"dispatch-{args.role}", thread=args.thread, by="coordinator")
+        print(f"{task['id']} {args.role} dispatched ({args.thread or 'manual'})")
         return 0
     text = args.text or ""
     if act == "submit":
@@ -157,6 +217,74 @@ def cmd_task(args) -> int:
         raise RatchetError(f"`ratchet task {act}` needs --notes/--reason explaining why")
     task = tasks.transition(root, rid, args.id, act, text=text, by=args.by or act)
     print(f"{task['id']} → {task['status']}" + (f" (round {task['rounds']})" if act == "reject" else ""))
+    return 0
+
+
+def cmd_tick(args) -> int:
+    root = require_root()
+    cfg = config.load(root)
+    rid = tasks.run_id(root, args.run)
+    run = tasks.load_run(root, rid)
+    actions = [{"do": "start", "why": f"no run '{rid}' yet", "command": "ratchet run start --goal \"...\""}] \
+        if run is None else orchestrate.tick(root, cfg, run)
+    if args.json:
+        print(json.dumps({"run": rid, "actions": actions}, indent=2))
+        return 0
+    print(f"run {rid}: {tasks.summary(run) if run else 'not started'}")
+    for a in actions:
+        extra = {k: v for k, v in a.items() if k not in ("do", "why")}
+        print(f"→ {a['do']}: {a['why']}")
+        for k, v in extra.items():
+            print(f"    {k}: {v}")
+    return 0
+
+
+def cmd_brief(args) -> int:
+    root = require_root()
+    rid = tasks.run_id(root, args.run)
+    if args.kind in ("worker", "judge") and not args.id:
+        raise RatchetError(f"`ratchet brief {args.kind}` needs a task id")
+    print(orchestrate.brief(root, config.load(root), rid, args.kind, args.id))
+    return 0
+
+
+def cmd_release(args) -> int:
+    root = require_root()
+    what = tasks.release_thread(root, tasks.run_id(root, args.run), args.thread, args.reason or "thread ended")
+    print(f"released: {what}")
+    return 0
+
+
+def cmd_evidence(args) -> int:
+    root = require_root()
+    rid = tasks.run_id(root, args.run)
+    if args.action == "add":
+        if not args.target or not args.path:
+            raise RatchetError("usage: ratchet evidence add <task-id|final> <file> --note \"...\"")
+        item = report.add_evidence(root, rid, args.target, args.path, args.note or "")
+        print(f"evidence saved: {item['path']}")
+    else:
+        run = tasks.require_run(root, rid)
+        holders = [("final", run)] + [(t["id"], t) for t in run["tasks"]]
+        items = [dict(e, target=name) for name, h in holders for e in h.get("evidence", [])]
+        _out(args, items, "\n".join(f"{e['target']}: {e['path']}  {e.get('note', '')}" for e in items) or "no evidence")
+    return 0
+
+
+def cmd_report(args) -> int:
+    root = require_root()
+    run = tasks.require_run(root, tasks.run_id(root, args.run))
+    text = report.html_report(run) if args.html else report.markdown(run)
+    if args.out:
+        Path(args.out).write_text(text)
+        print(args.out)
+    else:
+        print(text)
+    return 0
+
+
+def cmd_port(args) -> int:
+    print(report.free_port())
     return 0
 
 
@@ -198,7 +326,8 @@ def cmd_status(args) -> int:
         text.append(f"run {run['id']} [{run['status']}]: {run['goal']} — {tasks.summary(run)}")
         for t in run["tasks"]:
             if t["status"] != "done":
-                text.append(f"  {t['id']} [{t['status']}] {t['title']}")
+                who = " (worker running)" if t["worker_thread"] else " (judge running)" if t["judge_thread"] else ""
+                text.append(f"  {t['id']} [{t['status']}] {t['title']}{who}")
     else:
         text.append(f"no run for '{rid}'")
     text.append(f"open blockers: {len(open_b)}")
@@ -221,6 +350,8 @@ def cmd_stats(args) -> int:
         "verify_seconds_max": secs[-1] if secs else 0,
         "judge_accepts": sum(1 for e in task_ev if e.get("action") == "accept"),
         "judge_rejects": sum(1 for e in task_ev if e.get("action") == "reject"),
+        "merge_conflicts": sum(1 for e in task_ev if e.get("action") == "conflict"),
+        "worker_releases": sum(1 for e in task_ev if e.get("action") == "release"),
         "top_failing_checks": failing.most_common(8),
         "open_blockers": sum(1 for b in blockers.load(root) if b["status"] == "open"),
     }
@@ -265,7 +396,7 @@ def cmd_hook(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="ratchet", description="Verification loop for coding agents.")
+    p = argparse.ArgumentParser(prog="ratchet", description="Verification loop for coding agents, built for T3 Code.")
     p.add_argument("--version", action="version", version=f"ratchet {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -290,18 +421,36 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--all", action="store_true")
     sp.add_argument("--reason", required=True)
 
-    sp = add("run", cmd_run, "start/show/close the run for this branch")
-    sp.add_argument("action", choices=["start", "show", "close"], nargs="?", default="show")
+    sp = add("tick", cmd_tick, "coordinator: what to do next (dispatch, merge, review, PR, CI)")
+    sp.add_argument("--run")
+    sp.add_argument("--json", action="store_true")
+    sp = add("brief", cmd_brief, "self-contained prompt for a worker/judge thread: worker|judge <id>, contract, final")
+    sp.add_argument("kind", choices=["worker", "judge", "contract", "final"])
+    sp.add_argument("id", nargs="?")
+    sp.add_argument("--run")
+    sp = add("release", cmd_release, "free the slot held by a finished worker/judge thread")
+    sp.add_argument("--thread", required=True)
+    sp.add_argument("--reason")
+    sp.add_argument("--run")
+
+    sp = add("run", cmd_run, "run lifecycle: start|show|dispatch|contract|final|pr|pushed|ci|close")
+    sp.add_argument("action", choices=["start", "show", "dispatch", "contract", "final", "pr", "pushed", "ci", "close"],
+                    nargs="?", default="show")
+    sp.add_argument("value", nargs="?")
     sp.add_argument("--goal")
-    sp.add_argument("--status", default="done", choices=["done", "abandoned"])
+    sp.add_argument("--thread")
+    sp.add_argument("--details")
+    sp.add_argument("--notes", "--reason", dest="text")
     sp.add_argument("--run", help="run id (default: current branch)")
     sp.add_argument("--json", action="store_true")
 
-    sp = add("task", cmd_task, "plan and move tasks: add|edit|list|next|show|start|submit|accept|reject|block|reset")
-    sp.add_argument("action", choices=["add", "edit", "list", "next", "show", "start", "submit", "accept",
-                                       "reject", "block", "reset"])
+    sp = add("task", cmd_task, "tasks: add|edit|list|next|show|dispatch|start|submit|accept|reject|merge|block|reset")
+    sp.add_argument("action", choices=["add", "edit", "list", "next", "show", "dispatch", "start", "submit", "accept",
+                                       "reject", "merge", "block", "reset"])
     sp.add_argument("id", nargs="?")
     sp.add_argument("--run")
+    sp.add_argument("--role", choices=["worker", "judge"])
+    sp.add_argument("--thread")
     sp.add_argument("--json", action="store_true", help="JSON output")
     sp.add_argument("--from-json", dest="json_input", help="task JSON (object or array), or - for stdin")
     sp.add_argument("--title")
@@ -313,10 +462,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--summary", "--notes", "--reason", dest="text")
     sp.add_argument("--by", help="who is acting (worker, judge, coordinator)")
 
+    sp = add("evidence", cmd_evidence, "attach screenshots/recordings/logs to a task or the final review")
+    sp.add_argument("action", choices=["add", "list"])
+    sp.add_argument("target", nargs="?")
+    sp.add_argument("path", nargs="?")
+    sp.add_argument("--note")
+    sp.add_argument("--run")
+    sp.add_argument("--json", action="store_true")
+    sp = add("report", cmd_report, "run report: markdown (PR body) or --html (for T3 html_render)")
+    sp.add_argument("--html", action="store_true")
+    sp.add_argument("--out")
+    sp.add_argument("--run")
+    add("port", cmd_port, "print a free local TCP port (for starting the app in a worktree)")
+
     sp = add("log", cmd_log, "append a line to the run's progress log")
     sp.add_argument("text", nargs="+")
     sp.add_argument("--run")
-
     sp = add("blocker", cmd_blocker, "log friction for the gardener: add|list|resolve")
     sp.add_argument("action", choices=["add", "list", "resolve"])
     sp.add_argument("text", nargs="*")

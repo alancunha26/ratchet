@@ -100,9 +100,21 @@ def detect(root: Path) -> dict:
         "tamper_ignore": [],
         "limits": config.DEFAULTS["limits"],
         "judge": {"model": "inherit"},
-        "run": {"pr": "draft", "max_parallel": 1},
+        "run": {"pr": "draft"},
+        "t3": config.DEFAULTS["t3"],
+        "app": dict(config.DEFAULTS["app"], dev=_dev_command(root, pkgs, pm)),
     }
     return {"config": cfg, "packages": pkgs, "kinds": kinds, "pm": pm}
+
+
+def _dev_command(root: Path, pkgs: list, pm: str):
+    """A starting guess for app.dev: the root package's dev/start script (init refines it)."""
+    roots = [p for p in pkgs if p.kind == "node" and p.dir == ""]
+    scripts = roots[0].scripts if roots else {}
+    for name in ("dev", "start"):
+        if name in scripts:
+            return f"{pm} run {name}"
+    return None
 
 
 def _claude_section() -> str:

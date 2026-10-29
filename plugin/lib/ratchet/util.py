@@ -26,6 +26,7 @@ def git(args: list[str], cwd: Path, *, env: Optional[dict] = None, check: bool =
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",  # diffs can contain non-UTF-8 bytes (binary-ish files git treats as text)
     )
     if check and proc.returncode != 0:
         raise RatchetError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
@@ -34,7 +35,8 @@ def git(args: list[str], cwd: Path, *, env: Optional[dict] = None, check: bool =
 
 def git_ok(args: list[str], cwd: Path) -> Optional[str]:
     """Run git and return stripped stdout, or None when it fails."""
-    proc = subprocess.run(["git", *args], cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    proc = subprocess.run(["git", *args], cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                          errors="replace")
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 

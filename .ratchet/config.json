@@ -15,5 +15,6 @@
   },
   "tamper_ignore": ["plugin/lib/ratchet/tamper.py", "tests/**", "**/*.md"],
   "judge": {"model": "inherit"},
-  "run": {"pr": "draft", "max_parallel": 1}
+  "run": {"pr": "draft"},
+  "t3": {"max_parallel": 2}
 }

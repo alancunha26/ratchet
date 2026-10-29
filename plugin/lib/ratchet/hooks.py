@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import blockers, checks, config, gitstate, tasks
-from .util import find_root, is_enabled, log_event, now, read_json, slug, state_dir, write_json
+from .util import find_root, git_ok, is_enabled, log_event, now, read_json, slug, state_dir, write_json
 
 
 def _debug(*parts) -> None:
@@ -40,7 +40,7 @@ CONTEXT = """[ratchet] This repo runs the ratchet verification loop.
 - Finishing a turn runs a gate: `ratchet verify` on the packages you changed, plus a tamper scan. If it fails you are sent back with the errors. Run `ratchet verify` yourself as you work; results are cached per working state, so it is cheap.
 - Never weaken a check to get through: no skipped/focused/deleted tests, no lint or type suppressions, no edits to .ratchet/config.json, CI workflows or snapshots unless that is the task. If one is genuinely required, `ratchet allow <id> --reason "..."`; the judge reviews every allowance.
 - Log anything that slowed you down (slow checks, flaky tests, missing tools, unclear specs): `ratchet blocker add "..." --kind slow|flaky|tooling|env|spec`.
-- For multi-step work use the `ratchet:run` skill. `ratchet status` shows the current run."""
+- Multi-step work runs as a T3 coordinator: `/ratchet:run <goal>`. Workers and judges are their own T3 threads; `ratchet status` shows the run."""
 
 
 def session_start(payload: dict) -> None:
@@ -76,6 +76,9 @@ def _gate(payload: dict, key: str, enforce_if_unchanged: bool) -> None:
     cfg = config.load(root)
     if not cfg["gate"].get("enabled", True):
         return
+    if git_ok(["symbolic-ref", "-q", "HEAD"], root) is None:
+        _debug("detached HEAD: read-only review checkout, gate skipped")
+        return  # judges review detached checkouts; they must be able to finish on red work
     sess_path = _session_file(root, key)
     sess = read_json(sess_path, {}) or {}
     tree = gitstate.tree_id(root)

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitstate
-from .util import current_branch, now, read_json, short_hash, slug, state_dir, write_json
+from .util import now, read_json, short_hash, state_dir, write_json
 
 TEST_PATH = re.compile(
     r"(^|/)(tests?|__tests__|specs?|e2e)/|[._-](test|spec)\.[A-Za-z0-9]+$|_test\.(go|py|rs)$|(^|/)test_[^/]*\.py$"
@@ -72,7 +72,9 @@ def scan(root: Path, cfg: dict, since: str, tree: str) -> list[Finding]:
 
 
 def _allow_path(root: Path) -> Path:
-    return state_dir(root) / "allow" / f"{slug(current_branch(root))}.json"
+    # Repo-wide (shared by every worktree): a worker's allowance must be visible to the judge
+    # on its detached checkout and to the coordinator after the merge.
+    return state_dir(root) / "allowances.json"
 
 
 def allowances(root: Path) -> dict:
