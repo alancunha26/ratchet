@@ -1,163 +1,150 @@
 # ratchet
 
-A verification loop for coding agents, built around [T3 Code](https://github.com/pingdotgg/t3code). A ratchet only turns one way: each task locks in progress behind checks, and nothing gets through by weakening those checks.
+A verification loop for coding agents. A ratchet only turns one way: each task locks in progress behind checks, and nothing gets through by weakening those checks.
 
-**T3 runs the agents.** The coordinator is a pinned T3 thread. Every worker and every judge is its own T3 thread, in its own worktree, visible in your sidebar, and you can step into any of them. Judges use T3's built-in browser to collect evidence for UI changes, and T3 watches the PR's CI.
-
-**ratchet provides the parts that must not drift:**
-- the repo's contract (`.ratchet/config.json`);
-- a state machine (`ratchet tick`) that tells the coordinator exactly what to do next;
-- self-contained briefs for each thread (`ratchet brief`);
-- the deterministic gate: checks on the changed packages, plus a tamper scan;
-- merges that happen only when the result is still green.
+- **Built on [T3 Code](https://github.com/pingdotgg/t3code), the agent IDE.** Every role is a T3 thread: the coordinator, the workers and the judges. ratchet uses T3's orchestration (`delegate_task` and async wake-ups), its built-in browser and devices, PR watching, schedules and webhooks, `t3.json` project scripts, and HTML renders.
+- **Harness-agnostic.** Claude Code, Codex, Cursor, OpenCode, Pi or any ACP agent can fill any role, and each role can use a different provider. Everything an agent needs comes from the `ratchet` CLI and self-contained briefs, not from one harness's features.
+- **Product-aware.** A Godot game, a web app, an API, a CLI, a library and a mobile app are verified differently. Profiles tell workers and judges how to run, exercise and collect evidence for each product in the repo.
 
 ```
-you ── /ratchet:run <goal> ──▶ coordinator thread (pinned, its own worktree)
-                                  │  ratchet tick → actions
-         ┌────────────────────────┼─────────────────────────┐
-   delegate_task (worktree)  delegate_task (worktree)   watch_pull_request
-   worker thread T1 … Tn     judge thread (browser,     CI wakes the coordinator
-   brief → code → gate →     screenshots, verify) →
-   submit                    accept / reject
-         └──── finishing wakes the coordinator ─────┘
-   accepted → ratchet task merge (integration gate) → final judge → PR → CI → report
+ratchet start "<goal>" ──▶ t3 thread start ──▶ coordinator thread (any harness, own worktree, pinned)
+                                                 │  ratchet tick → next actions
+             ┌───────────────────────────────────┼──────────────────────────────┐
+     delegate_task (role: implementation)   delegate_task (role: review)   watch_pull_request
+     worker thread, any harness             judge thread(s), any harness   CI and review comments
+     brief → code → verify → submit         verify + exercise the product   wake the coordinator
+                                            (T3 browser, devices, frames) → accept / reject
+             └──────────── each finished child wakes the coordinator ───────────────┘
+     accepted → merge with an integration gate → final judge → PR → CI → HTML report in the thread
 ```
-
-The coordinator is event-driven. It dispatches children asynchronously and ends its turn, and each child that finishes wakes it again. A run can last as long as it needs to, and its state lives on disk (`.git/ratchet/`, shared by every worktree), so it resumes anywhere.
-
-**Constraint:** T3 delegates run in the parent thread's project. Run the coordinator in a thread of the repo's own project (`/ratchet:run` hands that thread off to a run worktree). Cross-repo runs (several T3 projects) aren't supported yet.
 
 ## Why it looks like this
 
-ratchet follows what has worked for teams running agents at scale:
-
-| Principle | Source | Where it lives in ratchet |
+| Principle | Source | Where it lives |
 |---|---|---|
-| Deterministic checks gate everything. They switch on from repo contents and return only the error lines that matter. | Spotify's background agents; Huntley's "backpressure" | `ratchet verify`, the Stop hook, `ratchet task merge` |
-| Agents grade their own work too kindly, so a separate judge tuned for skepticism decides. | Anthropic, harness design for long-running apps | judge threads (T3 browser evidence), `.ratchet/judge.md` |
-| Agree on how success is checked before writing code. | Anthropic's sprint contracts | task `criteria` + `verify`, judge "contract" mode |
-| State lives in files and git, not in the conversation. | Anthropic, effective harnesses | runs/tasks/progress under `.git/ratchet/` |
-| One task per fresh context. Keep the structure simple. | Ralph loop; Cursor's planner/worker/judge | a T3 coordinator thread + a worker thread per task |
-| Cap the retries, then escalate. | Stripe Minions (2 CI rounds) | `limits.*`, blockers |
+| Deterministic checks gate everything. They're scoped to the change and return only the error lines that matter. | Spotify's background agents; Huntley's "backpressure" | `ratchet verify`. `task submit`, `task accept` and `task merge` refuse red work. |
+| An agent grading its own work is too kind, so a separate, skeptical judge decides. | Anthropic, harness design | judge threads, on a different model or harness if you like; `judge_panel` for subjective work |
+| Agree on how success is checked before writing code. | Anthropic's sprint contracts | task `criteria` and `verify` steps, a contract-review thread, profile criteria guides |
+| State lives in files, not in the conversation. | Anthropic, effective harnesses | `.git/ratchet/`, shared by every worktree. Resume anywhere with `ratchet tick`. |
+| A fresh context per task, a simple structure, decisions in code. | Ralph loop; Cursor's planner/worker/judge | one worker thread per task; the `tick` state machine |
+| Cap retries and escalate. | Stripe Minions | `limits.*`, blockers, `escalate` |
 | Block attempts to pass by weakening checks. | Anthropic, Arize | `ratchet tamper` / `ratchet allow` |
-| Turn friction into harness fixes. | OpenAI harness engineering; Theo's "ask what blocks them" | `ratchet blocker`, `ratchet stats`, `ratchet:garden` |
+| Turn friction into harness fixes. | OpenAI harness engineering; Theo's "ask what blocks them" | `ratchet blocker`, `ratchet stats`, the gardener brief on a T3 schedule |
 
-## Install
-
-The repo is a Claude Code plugin marketplace called `cosmyk`.
+## Install (once per machine)
 
 ```bash
-claude plugin marketplace add ~/.repos/github.com/cosmyk/ratchet   # or Cosmyk-Labs/ratchet once pushed
-claude plugin install ratchet@cosmyk
+~/.repos/github.com/cosmyk/ratchet/scripts/install.sh
 ```
 
-Install it on every machine that runs T3 threads. Worker and judge threads are full Claude sessions, so the plugin's Stop gate only protects them where it's installed. Briefs call the CLI by absolute path, so they work even without it on PATH.
-
-The plugin puts `ratchet` on the agent's PATH and adds hooks and skills. Outside repos that have `.ratchet/config.json`, the hooks do nothing.
+This links `ratchet` into `~/.local/bin`, so every harness and T3 terminal can find it. If Claude Code is installed, it also installs the Claude plugin (`ratchet@cosmyk`), which adds one-line skills and a Stop hook that gives Claude faster feedback. Briefs call the CLI by absolute path, so child threads work either way.
 
 ## Use
 
-| You do | What happens |
+| You | What happens |
 |---|---|
-| `/ratchet:init` in a repo | Detects packages and checks, tunes them to match CI, proves the baseline is green, writes `.ratchet/` and a `CLAUDE.md` section, and adds a T3 worktree setup script. |
-| `/ratchet:run <goal, issue URL or spec>` | Runs the T3 coordinator: plan, a contract-review thread, worker threads (in parallel when their packages don't overlap), a judge thread per task, a merge gate, a final judge, a draft PR, then CI watching through T3. Ends with an HTML report in the thread. |
-| Normal work in the repo | The Stop gate checks every change you make. `ratchet verify` gives fast feedback any time. |
-| `/ratchet:garden` (weekly via T3 `schedule_task`) | Reads `ratchet stats` and the blockers, then fixes the biggest friction through its own ratchet run. |
-| Label a GitHub issue `ratchet` (optional T3 webhook) | Starts a new coordinator thread for that issue, with nobody at the keyboard. |
-
-Other skills: `/ratchet:work <task>` (the worker protocol, used by T3 delegates working in parallel) and `/ratchet:judge <mode>`.
+| In a repo thread: "set up ratchet" (`/ratchet:init`, or follow `ratchet brief init`) | Detects packages, checks and products (web, api, cli, library, mobile, Godot); proves the baseline is green; writes `.ratchet/`, the `CLAUDE.md`/`AGENTS.md` sections and the `t3.json` scripts; offers schedules. |
+| `ratchet start "<goal or issue URL>" [--provider codex] [--model ...]` | Launches a coordinator thread in T3, in its own worktree on `ratchet/<slug>`. It plans, dispatches, judges, merges, opens a PR, watches CI, and ends with a report. |
+| In any existing thread: "run ratchet for X" (`/ratchet:run X`, or `ratchet brief coordinator --goal "X"`) | The same coordinator, in that thread. |
+| Label an issue `ratchet` (optional T3 webhook) | A coordinator thread starts for it with no one at the keyboard. |
+| Weekly T3 schedule: "run `ratchet brief garden`" | Reads `ratchet stats` and the blockers, then fixes the biggest friction through its own run. |
 
 ## The repo contract: `.ratchet/config.json`
 
 ```jsonc
 {
-  "base": "auto",                       // origin/HEAD, then main/master
-  "setup": "pnpm install --frozen-lockfile",
-  "packages": "auto",                   // or [{"dir": "svc/api", "kind": "node"}]
+  "base": "auto",
+  "setup": "pnpm install --frozen-lockfile",       // also t3.json's runOnWorktreeCreate script (async: false)
   "checks": {
-    "node": {
-      "fast": ["script:lint", "script:typecheck", "script:test"],  // only if the package defines the script
-      "full": ["script:build", "script:test:e2e"]
-    },
-    "rust": {"fast": ["batch:cargo clippy --all-targets {p_flags} -- -D warnings", "batch:cargo test {p_flags}"]}
+    "node":  {"fast": ["script:lint", "script:typecheck", "script:test"], "full": ["script:build", "script:test:e2e"]},
+    "godot": {"fast": ["ratchet exec-check --fail-on 'SCRIPT ERROR|^ERROR:' -- godot --headless --path . --quit"]}
   },
-  "repo_checks": {"fast": [{"run": "pnpm prettier --check .", "when": ["**/*.{ts,tsx,md}"]}], "full": []},
+  "repo_checks": {"fast": [{"run": "pnpm prettier --check .", "when": ["**/*.{ts,tsx}"]}]},
   "protect": [".ratchet/config.json", ".github/workflows/**", "**/__snapshots__/**", "**/*.snap"],
-  "skip": ["packages/legacy:test"],     // quarantine; always paired with a blocker
-  "limits": {"gate_attempts": 4, "judge_rounds": 2, "ci_rounds": 2, "parallel_jobs": 4, "machine_slots": 2},
-  "run": {"pr": "draft"},               // draft | ready | none
-  "t3": {
-    "max_parallel": 2,                  // worker threads at once (disjoint packages only)
+  "limits": {"gate_attempts": 4, "judge_rounds": 2, "worker_attempts": 3, "ci_rounds": 2},
+  "run": {"pr": "draft"},
+  "agents": {                                       // every role is a T3 thread; any provider T3 hosts
+    "max_parallel": 1,                              // 1: one task at a time in the run checkout; >1: worktrees
     "contract_review": true,
-    "worker": {"model": null, "provider": null, "isolation": "worktree"},
-    "judge": {"model": "claude-sonnet-5-5", "provider": null}  // a different model gives a second opinion
+    "judge_panel": 1,                               // >1: independent judges vote (games, design)
+    "coordinator": {"provider": null, "model": null},
+    "worker": {"provider": "claudeAgent", "model": null},
+    "judge":  {"provider": "codex", "model": null}  // a different harness gives a second opinion
   },
-  "app": {                              // how judges start the product for browser review
-    "dev": "pnpm --filter web dev", "port_env": "PORT", "url": "http://localhost:{port}/",
-    "ready_text": "ready", "profile": null, "ui_paths": ["**/*.tsx", "**/*.css"]
-  }
+  "products": [                                     // what the repo ships; each uses a profile
+    {"name": "web",  "profile": "web",   "paths": ["apps/web/**"], "run": "pnpm --filter web dev",
+     "port_env": "PORT", "url": "http://localhost:{port}/", "ready_text": "ready", "browser_profile": "test-user"},
+    {"name": "api",  "profile": "api",   "paths": ["services/api/**"], "run": "pnpm --filter api dev", "port_env": "PORT"},
+    {"name": "game", "profile": "godot", "paths": ["game/**"], "dir": "game", "godot": "godot4", "main_scene": "res://main.tscn"}
+  ]
 }
 ```
 
-Check specs:
-- `script:NAME` runs a package.json script, and only in packages that define it.
-- `batch:CMD` runs once at the repo root for every affected package of that kind. Placeholders: `{names}`, `{p_flags}`, `{filters}`, `{dirs}`.
-- A plain `CMD` runs inside each affected package. Placeholders: `{name}`, `{dir}`.
+## Product profiles
 
-"Affected" means the packages that own a changed file, plus every package that depends on them (followed through workspace and path dependencies).
+Run `ratchet profiles` to list them, or `ratchet profiles godot` to show one. Each profile is a markdown guide with `## Run`, `## Exercise`, `## Evidence` and `## Good criteria` sections:
 
-## How the gate works
+| Profile | How the judge exercises it |
+|---|---|
+| `web` | T3's built-in browser: background tab, act, snapshot images, mobile size, dark and light mode, recordings; console errors are a fail. Playwright elsewhere. |
+| `api` | Starts the service on a free port and sends real requests, including errors and auth; checks responses against the schema and the logs. |
+| `cli` | Runs commands in a scratch dir; checks exit codes, output and golden files, plus bad inputs. |
+| `library` | Writes a tiny consumer of the public API, checks dependents, flags unstated breaking changes. |
+| `mobile` | T3 devices (simulators and emulators through `agent-device`), plus Maestro, Detox or Flutter integration tests. |
+| `godot` | Checks the headless load output for script errors, runs GUT or gdUnit4 scene tests with simulated input, captures Movie Maker frames for visuals (xvfb on Linux), replays recorded inputs, measures FPS, and uses a rubric with a judge panel for "feel". |
 
-1. ratchet snapshots the full working state as a git tree, using a throwaway index so your staging area is never touched. The same state always gives the same id, so results are cached by id and an unchanged state is never re-verified.
-2. It diffs that tree against the merge-base with the base branch and maps the changed files to affected packages.
-3. It runs those packages' checks in parallel. A machine-wide slot limit stops parallel worktrees from running the machine out of memory. Only the relevant error lines go back to the agent; the full logs stay in `.git/ratchet/logs/`.
-4. It scans the diff for attempts to weaken checks: skipped or focused tests, deleted test files, lint and type suppressions, protected paths.
-5. On Stop, a failure blocks the agent from finishing and gives it the errors. After `gate_attempts` failures it lets the agent stop and logs a blocker. A session that changed nothing is never blocked.
-6. `ratchet task submit` needs a clean, committed tree with fast checks green. `ratchet task accept` needs the full checks green.
-7. `ratchet task merge` merges an accepted task into the run branch, then re-runs the checks. On a conflict or a red result it restores the run branch and sends the task back with a note.
-8. Detached checkouts (judges) are never gated, so a judge can always finish and reject red work.
+Add your own in `.ratchet/profiles/<name>.md`. A repo profile overrides a built-in one of the same name. Briefs include only the profiles of the products a task touches.
 
-All runtime state (evidence, logs, runs, blockers, events) lives in the git common dir under `.git/ratchet/`. Every worktree of the repo shares it, and it's never committed.
+## How verification works
+
+1. **Snapshot.** The working state becomes a git tree id (via a throwaway index). Results are cached per id.
+2. **Affected packages.** The diff against the merge-base maps to the packages that own the changed files, plus everything that depends on them. Their checks run in parallel, with a cap on how many verify runs a machine handles at once, and only the error lines that matter are kept.
+3. **Tamper scan.** It flags skipped or focused tests, deleted tests, suppressions, and changes to protected paths.
+4. **Hard gates, the same for every harness.**
+   - `task submit` needs committed work and green fast checks.
+   - `task accept` needs green full checks.
+   - `task merge` merges into the run branch and re-runs the checks. On a conflict or a red result it restores the branch and sends the task back.
+   - `run final accept` needs green full checks.
+5. **Claude Code adapter.** The plugin's Stop hook runs the same verification whenever Claude tries to finish. Detached checkouts (judges) skip it.
+
+State (evidence, logs, runs, blockers, events) lives in `.git/ratchet/`, shared by every worktree and never committed.
 
 ## CLI
 
 ```
-ratchet verify [--full] [--all] [--no-cache] [--json]
-ratchet affected | tamper | allow <id> --reason "..."
-ratchet tick [--json]                          # coordinator: what to do next
-ratchet brief worker|judge <id> | brief contract|final
-ratchet release --thread <id>                  # a child ended without recording an outcome
+ratchet start "<goal>" [--provider] [--model] [--base] [--dry-run]
+ratchet tick [--json]                              # coordinator: the next actions
+ratchet brief coordinator|plan|worker <id>|judge <id>|contract|final|init|garden
+ratchet release --thread <id>                      # a child ended without recording an outcome
 ratchet run start|show|dispatch|contract|final|pr|pushed|ci|close
-ratchet task merge <id> | task dispatch <id> --role worker|judge --thread <id>
+ratchet task add|edit|list|next|show|dispatch|start|submit|accept|reject|merge|rollback|block|reset
+ratchet verify [--full] [--all] | affected | tamper | allow <id> --reason "..."
 ratchet evidence add <task|final> <file> --note "..." | evidence list
-ratchet report [--html] | port
-ratchet task add --from-json - | edit <id> --from-json '{...}' | list | next | show <id>
-ratchet task start|submit|accept|reject|block|reset <id> [--summary/--notes/--reason "..."]
-ratchet log "..." | blocker add "..." --kind slow|flaky|tooling|env|spec | blocker list | blocker resolve <id>
-ratchet status | stats | init | doctor [--baseline] | setup
+ratchet report [--html] | profiles [name] | exec-check --fail-on RE -- cmd | port
+ratchet log | blocker add|list|resolve | status | stats | init | doctor [--baseline] | setup
 ```
 
-`RATCHET_GATE=off` turns the gate off for a session. `RATCHET_DEBUG=1` explains its decisions on stderr. `RATCHET_SLOTS=N` overrides the machine slot limit.
+`RATCHET_GATE=off` turns the Claude Stop gate off for a session, and `RATCHET_DEBUG=1` explains its decisions.
+
+## T3 Code facts the design relies on
+
+- T3 hosts the harnesses and gives each one the `t3-code` MCP tools. ACP agents get them only if they support MCP. Pi finds most of them through its tool search.
+- A `delegate_task` child runs in the parent thread's project and receives only its task text, so briefs are self-contained. Completion wakes the parent.
+- Children can't widen their permission mode, and approvals aren't routed to the parent. Unattended runs need a mode that doesn't stop for approvals.
+- `watch_pull_request` polls every 2 minutes and wakes the thread on failed checks, comments from others, or conflicts.
+- `t3.json` scripts are committed and shared across machines. `runOnWorktreeCreate` with `async: false` holds the agent until setup finishes.
 
 ## Layout
 
 ```
-.claude-plugin/marketplace.json   marketplace "cosmyk" → ./plugin
+scripts/install.sh                  ratchet on PATH + the Claude plugin
+.claude-plugin/marketplace.json     marketplace "cosmyk" → ./plugin
 plugin/
-  .claude-plugin/plugin.json
-  bin/ratchet                     CLI (Python 3.9+, stdlib only)
-  lib/ratchet/                    gitstate, workspace, checks, tamper, tasks, orchestrate, report, blockers, hooks, scaffold, cli
-  hooks/hooks.json                SessionStart, Stop, PreToolUse
-  skills/init, run, work, judge, garden
-  templates/                      briefs (worker, judge, contract, final), CLAUDE.md section, judge calibration
-tests/                            end-to-end tests on throwaway monorepos
-.ratchet/                         ratchet checks itself
-```
-
-## Develop
-
-```bash
-python3 -m unittest discover -s tests       # also runs as ratchet's own gate
-claude plugin validate ./plugin
-claude --plugin-dir ./plugin                # try local changes without installing
+  bin/ratchet                       the CLI (Python 3.9+, stdlib only)
+  lib/ratchet/                      gitstate, workspace, checks, tamper, tasks, orchestrate, profiles, report, ...
+  templates/                        briefs: coordinator, plan, worker, judge, contract, final, init, garden
+  profiles/                         web, api, cli, library, mobile, godot
+  skills/                           Claude adapter: init, run, work, judge, garden (each calls a brief)
+  hooks/hooks.json                  Claude adapter: SessionStart context, Stop gate, state guard
+tests/                              end-to-end tests on throwaway monorepos and worktrees
 ```

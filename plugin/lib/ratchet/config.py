@@ -7,7 +7,7 @@ from typing import Any
 
 from .util import RatchetError, read_json
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 # Check specs, per package kind:
 #   "script:NAME"  run the package.json script NAME if the package defines it (node only)
