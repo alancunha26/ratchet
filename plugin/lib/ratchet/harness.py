@@ -69,10 +69,38 @@ class Check:
         return any(glob_match(p, g) for p in paths for g in self.scope)
 
 
+_GLOB_CACHE: dict = {}
+
+
+def _glob_regex(pattern: str):
+    rx = _GLOB_CACHE.get(pattern)
+    if rx is None:
+        import re
+
+        out, i = [], 0
+        while i < len(pattern):
+            if pattern.startswith("**/", i):
+                out.append("(?:.*/)?")
+                i += 3
+            elif pattern.startswith("**", i):
+                out.append(".*")
+                i += 2
+            elif pattern[i] == "*":
+                out.append("[^/]*")
+                i += 1
+            elif pattern[i] == "?":
+                out.append("[^/]")
+                i += 1
+            else:
+                out.append(re.escape(pattern[i]))
+                i += 1
+        rx = _GLOB_CACHE[pattern] = re.compile("^" + "".join(out) + "$")
+    return rx
+
+
 def glob_match(path: str, pattern: str) -> bool:
-    if fnmatch.fnmatch(path, pattern):
-        return True
-    return pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:])
+    """Path glob: `**/` spans zero or more directories, `*` stays within one; plain fnmatch also accepted."""
+    return bool(_glob_regex(pattern).match(path)) or fnmatch.fnmatch(path, pattern)
 
 
 def _merge(base: dict, over: dict) -> dict:

@@ -41,10 +41,9 @@ class Finding:
 
 
 def _glob_match(path: str, pattern: str) -> bool:
-    if fnmatch.fnmatch(path, pattern):
-        return True
-    # Let "**/x" also match a top-level "x".
-    return pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:])
+    from .harness import glob_match
+
+    return glob_match(path, pattern)
 
 
 def scan(root: Path, cfg: dict, since: str, tree: str, harness_task: bool = False) -> list[Finding]:
