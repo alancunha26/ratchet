@@ -1,0 +1,8 @@
+{
+  "name": "cosmyk",
+  "description": "Cosmyk's Claude Code plugins",
+  "owner": { "name": "Alan Cunha" },
+  "plugins": [
+    { "name": "ratchet", "source": "./plugin", "description": "Verifiable development cycles, generated per repo", "category": "development" }
+  ]
+}

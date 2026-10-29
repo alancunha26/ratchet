@@ -1,0 +1,10 @@
+{
+  "name": "ratchet",
+  "displayName": "Ratchet",
+  "version": "1.0.0",
+  "description": "Sets up a verifiable development cycle inside each repo, using that project's own tools. Built on T3 Code and works with any harness. The kernel enforces per-test gates, failing-first tests and an independent judge; the generated harness evolves with the project.",
+  "author": { "name": "Alan Cunha", "url": "https://github.com/Cosmyk-Labs" },
+  "repository": "https://github.com/Cosmyk-Labs/ratchet",
+  "license": "MIT",
+  "keywords": ["verification", "agent-loop", "harness", "monorepo", "t3code"]
+}
