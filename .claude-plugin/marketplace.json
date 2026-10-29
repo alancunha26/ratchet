@@ -1,0 +1,13 @@
+{
+  "name": "cosmyk",
+  "description": "Cosmyk's Claude Code plugins",
+  "owner": { "name": "Alan Cunha" },
+  "plugins": [
+    {
+      "name": "ratchet",
+      "source": "./plugin",
+      "description": "Verification loop for coding agents (gates, judge, tasks, gardener)",
+      "category": "development"
+    }
+  ]
+}
