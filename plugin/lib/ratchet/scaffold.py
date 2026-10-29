@@ -157,7 +157,7 @@ def doctor(root: Path, baseline: bool = False) -> tuple[bool, str]:
         lines.append(f"  {p.kind:<7} {p.label:<40} {', '.join(names) or '(no per-package checks)'}")
     for label, names in by_pkg.items():
         if not any(p.label == label for p in pkgs):
-            lines.append(f"  {'batch':<7} {label:<40} {', '.join(names)}")
+            lines.append(f"  {'repo' if label == '.' else 'batch':<7} {label:<40} {', '.join(names)}")
     problems = []
     if not jobs:
         problems.append("no checks are configured: the gate has nothing to enforce. Add checks before feature work.")

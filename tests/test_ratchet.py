@@ -297,6 +297,15 @@ class DiscoveryTest(unittest.TestCase):
         self.assertIn("error TS2322", out)
         self.assertLess(len(out.splitlines()), 10)
 
+    def test_excerpt_drops_runtime_internal_frames(self) -> None:
+        out = checks.excerpt("AssertionError: 5 !== 15\n    at TestContext.<anonymous> (/r/app/index.test.js:3:30)\n"
+                             "    at Test.run (node:internal/test_runner/test:1062:25)\n"
+                             "npm error path /r/app\nnpm error Lifecycle script `test` failed")
+        self.assertIn("index.test.js:3:30", out)
+        self.assertNotIn("node:internal", out)
+        self.assertNotIn("npm error path", out)
+        self.assertIn("Lifecycle script", out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -142,7 +142,7 @@ _RELEVANT = re.compile(
 
 def excerpt(output: str, max_lines: int = 40, max_chars: int = 3000) -> str:
     """Keep only the lines an agent needs to act on, so failures don't flood its context."""
-    lines = [l.rstrip() for l in output.splitlines() if l.strip()]
+    lines = [l.rstrip() for l in output.splitlines() if l.strip() and not _NOISE.search(l)]
     keep: list[int] = []
     for i, line in enumerate(lines):
         if _RELEVANT.search(line):
@@ -154,6 +154,10 @@ def excerpt(output: str, max_lines: int = 40, max_chars: int = 3000) -> str:
         chosen = chosen[:max_lines] + [f"... ({len(chosen) - max_lines} more relevant lines in the log)"]
     text = "\n".join(chosen)
     return text[:max_chars] + ("\n..." if len(text) > max_chars else "")
+
+
+# Runtime-internal stack frames never help an agent fix its code.
+_NOISE = re.compile(r"\((node:internal|node:async_hooks)|^\s+at .*(node_modules|node:internal)|^npm (error|ERR!) (path|location|workspace|command|code)\b")
 
 
 @contextmanager
