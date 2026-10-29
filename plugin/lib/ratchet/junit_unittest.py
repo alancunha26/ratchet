@@ -51,8 +51,11 @@ class _Result(unittest.TextTestResult):
 
 
 def main(start: str = ".") -> int:
-    sys.path.insert(0, os.path.abspath(start if start != "." else os.getcwd()))
-    suite = unittest.defaultTestLoader.discover(start, pattern="test*.py", top_level_dir=os.getcwd())
+    start_abs = os.path.abspath(start)
+    # A plain test dir (no __init__.py) is its own top level; a package dir is imported from the cwd.
+    top = os.getcwd() if os.path.exists(os.path.join(start_abs, "__init__.py")) else start_abs
+    sys.path.insert(0, top)
+    suite = unittest.defaultTestLoader.discover(start_abs, pattern="test*.py", top_level_dir=top)
     runner = unittest.TextTestRunner(resultclass=_Result, verbosity=2)
     result = runner.run(suite)
     root = ET.Element("testsuites")

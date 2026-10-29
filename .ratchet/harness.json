@@ -1,0 +1,97 @@
+{
+  "kernel": "1",
+  "base": "auto",
+  "setup": null,
+  "maintenance": null,
+  "checks": [
+    {
+      "name": "unit",
+      "run": "bash .ratchet/verify/unit.sh",
+      "scope": [
+        "plugin/**",
+        "tests/**"
+      ],
+      "min_tests": 10,
+      "mutate": [
+        "plugin/lib/ratchet/**/*.py"
+      ],
+      "canary": {
+        "path": "tests/test_ratchet_canary.py",
+        "content": "import unittest\n\n\nclass RatchetCanary(unittest.TestCase):\n    def test_ratchet_canary(self):\n        self.fail('ratchet canary')\n"
+      }
+    },
+    {
+      "name": "plugin",
+      "run": "bash .ratchet/verify/plugin.sh",
+      "scope": [
+        "plugin/**",
+        ".claude-plugin/**"
+      ],
+      "min_tests": 0
+    },
+    {
+      "name": "py39",
+      "run": "uv run --no-project --python 3.9 python plugin/bin/ratchet junit-unittest tests",
+      "level": "full",
+      "scope": [
+        "plugin/**",
+        "tests/**"
+      ],
+      "min_tests": 10
+    }
+  ],
+  "products": [
+    {
+      "name": "ratchet",
+      "kind": "cli",
+      "paths": [
+        "plugin/**"
+      ],
+      "exercise": ".ratchet/exercise/ratchet.md",
+      "exercises": []
+    }
+  ],
+  "budgets": [],
+  "protect": [
+    ".ratchet/**",
+    "t3.json",
+    ".github/workflows/**",
+    "**/__snapshots__/**",
+    "**/*.snap"
+  ],
+  "tamper_ignore": [],
+  "limits": {
+    "gate_attempts": 4,
+    "judge_rounds": 2,
+    "worker_attempts": 3,
+    "ci_rounds": 2,
+    "parallel_jobs": 4,
+    "machine_slots": 2,
+    "check_timeout_sec": 900,
+    "flaky_reruns": 1,
+    "mutants": 8
+  },
+  "agents": {
+    "max_parallel": 1,
+    "contract_review": true,
+    "judge_panel": 1,
+    "coordinator": {
+      "provider": null,
+      "model": null
+    },
+    "worker": {
+      "provider": null,
+      "model": null,
+      "options": {}
+    },
+    "judge": {
+      "provider": null,
+      "model": null,
+      "options": {}
+    }
+  },
+  "run": {
+    "pr": "draft"
+  },
+  "$schema": "https://github.com/Cosmyk-Labs/ratchet/blob/main/DESIGN.md"
+}

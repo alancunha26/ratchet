@@ -499,6 +499,14 @@ class EvolveAndHooksTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 1)
             t = results.collect(Path(d)).tests
             self.assertEqual(sorted(t.values()), ["fail", "pass"])
+            sub = Path(d) / "plain"  # a test dir that isn't a package, run from its parent
+            sub.mkdir()
+            (sub / "test_y.py").write_text("import unittest\nclass T(unittest.TestCase):\n    def test_ok(self): pass\n")
+            out = Path(d) / "out2"
+            proc = subprocess.run([sys.executable, str(BIN), "junit-unittest", "plain"], cwd=d, capture_output=True,
+                                  text=True, env={**os.environ, "RATCHET_OUT": str(out)})
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual(list(results.collect(out).tests.values()), ["pass"])
 
 
 if __name__ == "__main__":
