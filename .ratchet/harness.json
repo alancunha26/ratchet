@@ -93,5 +93,5 @@
   "run": {
     "pr": "draft"
   },
-  "$schema": "https://github.com/Cosmyk-Labs/ratchet/blob/main/DESIGN.md"
+  "$schema": "https://github.com/alancunha26/ratchet/blob/main/DESIGN.md"
 }

@@ -1,5 +1,7 @@
 # ratchet
 
+[![ci](https://github.com/alancunha26/ratchet/actions/workflows/ci.yml/badge.svg)](https://github.com/alancunha26/ratchet/actions/workflows/ci.yml)
+
 Sets up an **opinionated, verifiable development cycle inside a repo, using that project's own tools.** A ratchet only turns one way: every task locks in progress behind proof, and the harness itself only gets stricter.
 
 - **Kernel (ratchet, the same in every repo, never generated).** The cycle and its invariants:
@@ -18,10 +20,13 @@ See [DESIGN.md](DESIGN.md) for the design and [LESSONS.md](LESSONS.md) for what 
 ## Install (once per machine)
 
 ```bash
-~/.repos/github.com/cosmyk/ratchet/scripts/install.sh
+git clone https://github.com/alancunha26/ratchet ~/.repos/github.com/alancunha26/ratchet
+~/.repos/github.com/alancunha26/ratchet/scripts/install.sh
 ```
 
-This links `ratchet` into `~/.local/bin`, for every harness and T3 terminal. It also installs the optional Claude Code adapter (`ratchet@cosmyk`): one-line skills plus a Stop hook for earlier feedback. Python 3.9+, standard library only.
+Or, for the Claude Code adapter only: `claude plugin marketplace add alancunha26/ratchet && claude plugin install ratchet@cosmyk`.
+
+`install.sh` links `ratchet` into `~/.local/bin`, for every harness and T3 terminal. It also installs the optional Claude Code adapter (`ratchet@cosmyk`): one-line skills plus a Stop hook for earlier feedback. Python 3.9+, standard library only.
 
 ## The three entry points
 

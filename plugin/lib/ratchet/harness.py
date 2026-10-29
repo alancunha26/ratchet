@@ -146,7 +146,7 @@ def load(root: Path) -> dict:
 
 def save(root: Path, h: dict) -> None:
     data = {k: v for k, v in h.items() if not k.startswith("_")}
-    data.setdefault("$schema", "https://github.com/Cosmyk-Labs/ratchet/blob/main/DESIGN.md")
+    data.setdefault("$schema", "https://github.com/alancunha26/ratchet/blob/main/DESIGN.md")
     write_json(path(root), data)
 
 
