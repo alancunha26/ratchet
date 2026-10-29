@@ -23,6 +23,11 @@ DEFAULT_CHECKS: dict[str, dict[str, list[str]]] = {
     },
     "go": {"fast": ["go vet ./...", "go test ./..."], "full": []},
     "python": {"fast": ["ruff check .", "python -m pytest -q"], "full": []},
+    # Godot exits 0 after script errors, so the load check scans its output (see profiles/godot.md).
+    "godot": {
+        "fast": ["ratchet exec-check --fail-on 'SCRIPT ERROR|Parse Error|^ERROR:' -- godot --headless --path . --quit"],
+        "full": [],
+    },
 }
 
 DEFAULT_PROTECT = [
@@ -53,24 +58,19 @@ DEFAULTS: dict[str, Any] = {
         "worker_attempts": 3,
     },
     "gate": {"enabled": True, "level": "fast", "tamper": True},
-    "judge": {"model": "inherit"},
     "run": {"pr": "draft"},
-    # How the coordinator uses T3 Code: every worker and judge is its own T3 thread.
-    "t3": {
-        "max_parallel": 2,
+    # Every role is a T3 Code thread (delegate_task), so any harness T3 hosts can fill any role.
+    # provider = T3 provider instance id (claudeAgent, codex, cursor, opencode, ...); null inherits.
+    "agents": {
+        "max_parallel": 1,        # >1: parallel workers in their own worktrees (disjoint packages only)
         "contract_review": True,
-        "worker": {"model": None, "provider": None, "isolation": "worktree"},
-        "judge": {"model": None, "provider": None},
+        "judge_panel": 1,         # >1: independent judges per task; majority decides (for subjective work)
+        "coordinator": {"provider": None, "model": None},
+        "worker": {"provider": None, "model": None, "options": {}},
+        "judge": {"provider": None, "model": None, "options": {}},
     },
-    # How agents run the product (the judge drives it in T3's built-in browser).
-    "app": {
-        "dev": None,
-        "url": "http://localhost:{port}",
-        "port_env": "PORT",
-        "ready_text": None,
-        "profile": None,
-        "ui_paths": ["**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.css", "**/*.scss", "**/*.html"],
-    },
+    # What this repo ships and how to exercise it; each entry uses a profile (profiles/*.md).
+    "products": [],
 }
 
 
@@ -84,6 +84,26 @@ def _merge(base: dict, over: dict) -> dict:
     return out
 
 
+def _upgrade(raw: dict) -> dict:
+    """Accept v0.2 configs (t3 / app / judge keys)."""
+    raw = dict(raw)
+    if "t3" in raw and "agents" not in raw:
+        t3 = raw.pop("t3") or {}
+        raw["agents"] = {k: v for k, v in t3.items() if k != "isolation"}
+    raw.pop("t3", None)
+    if "judge" in raw:
+        model = (raw.pop("judge") or {}).get("model")
+        if model and model != "inherit":
+            raw.setdefault("agents", {}).setdefault("judge", {}).setdefault("model", model)
+    app = raw.pop("app", None)
+    if app and app.get("dev") and not raw.get("products"):
+        raw["products"] = [{"name": "app", "profile": "web", "paths": app.get("ui_paths") or ["**"],
+                            "run": app["dev"], "port_env": app.get("port_env", "PORT"),
+                            "url": app.get("url"), "ready_text": app.get("ready_text"),
+                            "browser_profile": app.get("profile")}]
+    return raw
+
+
 def config_path(root: Path) -> Path:
     return root / ".ratchet" / "config.json"
 
@@ -94,6 +114,7 @@ def load(root: Path) -> dict:
         raise RatchetError("no .ratchet/config.json here; run `ratchet init` first")
     if not isinstance(raw, dict):
         raise RatchetError(".ratchet/config.json must be a JSON object")
+    raw = _upgrade(raw)
     cfg = _merge(DEFAULTS, {k: v for k, v in raw.items() if not k.startswith("$")})
     # Checks merge per kind so a repo can override just one kind or one level.
     checks = copy.deepcopy(DEFAULT_CHECKS)

@@ -189,7 +189,21 @@ def discover_python(root: Path) -> list[Package]:
     return out
 
 
-DISCOVERERS = {"node": discover_node, "rust": discover_rust, "go": discover_go, "python": discover_python}
+# ---------- godot ----------
+
+def discover_godot(root: Path) -> list[Package]:
+    out = []
+    for proj in sorted(root.glob("project.godot")) + sorted(root.glob("*/project.godot")) + sorted(root.glob("*/*/project.godot")):
+        d = proj.parent
+        if set(d.relative_to(root).parts) & (SKIP_DIRS | {"addons"}):
+            continue
+        name = re.search(r'config/name="([^"]+)"', _read(proj))
+        out.append(Package(name.group(1) if name else (d.name if d != root else root.name), _rel(root, d), "godot"))
+    return out
+
+
+DISCOVERERS = {"node": discover_node, "rust": discover_rust, "go": discover_go, "python": discover_python,
+               "godot": discover_godot}
 
 
 def discover(root: Path, cfg: dict) -> list[Package]:

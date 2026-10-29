@@ -1,11 +1,12 @@
 # ratchet
 
-A Claude Code plugin (in `plugin/`), served from a marketplace at the repo root. See README.md for the design.
+A verification loop built on T3 Code (the agent IDE) and agnostic of the harness inside it (Claude Code, Codex, Cursor, OpenCode...). The core is the `ratchet` CLI plus its briefs and profiles. `plugin/` also ships as a Claude Code plugin, which is just one adapter. See README.md.
 
 ## Ground rules
 - `plugin/lib/ratchet` is stdlib-only Python 3.9+. It must run on macOS and Linux. No third-party imports, no `match`, no PEP 604 unions at runtime (use `from __future__ import annotations`).
 - Hooks (`plugin/lib/ratchet/hooks.py`) must never trap a session because of a ratchet bug. Errors are logged to `.git/ratchet/errors.log` and the session is let through. Outside repos with `.ratchet/config.json`, hooks exit immediately.
-- Skills and agents are protocols other agents follow literally. When you change CLI behaviour, update every skill that mentions it (`grep -rn "ratchet <cmd>" plugin/skills plugin/agents`).
+- Protocols live in `plugin/templates/brief-*.md` and product knowledge in `plugin/profiles/*.md`. Any harness reads them, and agents follow them literally. Skills are one-line wrappers. When you change CLI behaviour, update every brief that mentions it (`grep -rn "{{R}} <cmd>" plugin/templates`).
+- Never depend on a single harness's features in the core. Claude-only things (hooks, skills) are optional adapters, and the hard gates live in the CLI.
 - Runtime state belongs under the git common dir (`util.state_dir`), never in the working tree.
 
 ## Verify

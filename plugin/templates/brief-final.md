@@ -1,6 +1,6 @@
 # Ratchet final review · {{repo}} · run {{run}}
 
-You are the ratchet judge reviewing the whole branch against the goal. Change nothing in the repo.
+You are a ratchet judge reviewing the whole branch against the goal. Change nothing in the repo.
 
 **Ratchet CLI:** `{{R}}`
 **Goal:** {{goal}}
@@ -21,24 +21,19 @@ You are the ratchet judge reviewing the whole branch against the goal. Change no
 
 ## Protocol
 
-1. **Check out the branch.** `git checkout --detach {{run_branch}}`, then `{{R}} setup` if needed.
-2. **Read the whole diff.** `git diff --stat {{base}}`, then the risky parts of `git diff {{base}}`.
-3. **Run the checks.** `{{R}} verify --full` must pass.
-4. **Exercise the goal end to end as its user would.**
+1. **Checkout.** {{checkout}} Then `{{R}} setup` if needed.
+2. **Diff.** `git diff --stat {{merge_base}}`, then the risky parts of `git diff {{merge_base}}`.
+3. **Checks.** `{{R}} verify --full` must pass.
+4. **Exercise the goal end to end** as its user would, with each product's tools:
 
-   How to run the product:
-   {{app}}
+{{exercise}}
 
-   For anything user-visible, use T3's built-in browser with the same protocol as task reviews: background tab, act, snapshot with images, check the diagnostics, then close the tab. Register captures with `{{R}} evidence add final <path> --run {{run}} --note "..."`.
-5. **Look for gaps.**
-   - Pieces that fell between tasks.
-   - Inconsistencies across tasks.
-   - Missing docs, or a `CLAUDE.md` that is out of date.
-   - Leftovers.
+   Register captures with `{{R}} evidence add final <path> --run {{run}} --note "..."`.
+5. **Look for gaps:** pieces that fell between tasks, inconsistencies across tasks, missing docs, leftovers.
 
 ## Record
 
-- `{{R}} run final accept --run {{run}} --notes "<summary of evidence>"`
+- `{{R}} run final accept --run {{run}} --notes "<evidence summary>"`
 - or `{{R}} run final reject --run {{run}} --notes "<each missing piece as a task: title + criteria + verify>"`
 
 Final message: `VERDICT: ACCEPT final` or `VERDICT: REJECT final`, then the summary.

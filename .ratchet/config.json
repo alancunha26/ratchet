@@ -6,15 +6,38 @@
   "packages": [],
   "repo_checks": {
     "fast": [
-      {"name": "unit tests", "run": "python3 -m unittest discover -s tests -q"},
-      {"name": "plugin manifest", "run": "claude plugin validate ./plugin", "when": ["plugin/**", ".claude-plugin/**"]}
+      {
+        "name": "unit tests",
+        "run": "python3 -m unittest discover -s tests -q"
+      },
+      {
+        "name": "plugin manifest",
+        "run": "claude plugin validate ./plugin",
+        "when": [
+          "plugin/**",
+          ".claude-plugin/**"
+        ]
+      }
     ],
     "full": [
-      {"name": "python 3.9 compat", "run": "uv run --no-project --python 3.9 python -m unittest discover -s tests -q"}
+      {
+        "name": "python 3.9 compat",
+        "run": "uv run --no-project --python 3.9 python -m unittest discover -s tests -q"
+      }
     ]
   },
-  "tamper_ignore": ["plugin/lib/ratchet/tamper.py", "tests/**", "**/*.md"],
-  "judge": {"model": "inherit"},
-  "run": {"pr": "draft"},
-  "t3": {"max_parallel": 2}
+  "tamper_ignore": [
+    "plugin/lib/ratchet/tamper.py",
+    "tests/**",
+    "**/*.md"
+  ],
+  "judge": {
+    "model": "inherit"
+  },
+  "run": {
+    "pr": "draft"
+  },
+  "agents": {
+    "max_parallel": 1
+  }
 }

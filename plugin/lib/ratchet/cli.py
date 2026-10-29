@@ -9,7 +9,7 @@ from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
-from . import blockers, checks, config, gitstate, hooks, orchestrate, report, scaffold, tamper, tasks, workspace
+from . import blockers, checks, config, gitstate, hooks, orchestrate, profiles, report, scaffold, tamper, tasks, workspace
 from .config import VERSION
 from .util import RatchetError, git, read_jsonl, require_root, state_dir
 
@@ -201,6 +201,9 @@ def cmd_task(args) -> int:
         ok, msg = orchestrate.merge(root, config.load(root), rid, args.id)
         print(msg)
         return 0 if ok else 1
+    if act == "rollback":
+        print(orchestrate.rollback(root, rid, args.id))
+        return 0
     if act == "dispatch":
         if args.role not in ("worker", "judge"):
             raise RatchetError("usage: ratchet task dispatch <id> --role worker|judge --thread <id>")
@@ -215,8 +218,10 @@ def cmd_task(args) -> int:
         _require_green(root, "full")
     if act in ("reject", "block") and not text:
         raise RatchetError(f"`ratchet task {act}` needs --notes/--reason explaining why")
-    task = tasks.transition(root, rid, args.id, act, text=text, by=args.by or act)
-    print(f"{task['id']} → {task['status']}" + (f" (round {task['rounds']})" if act == "reject" else ""))
+    task = tasks.transition(root, rid, args.id, act, text=text, by=args.by or act, thread=args.thread)
+    pending = f" (panel: {len(task['votes'])}/{tasks.panel_size(root)} votes in)" if task.get("votes") else ""
+    print(f"{task['id']} → {task['status']}" + (f" (round {task['rounds']})" if act == "reject" and not pending else "")
+          + pending)
     return 0
 
 
@@ -241,10 +246,64 @@ def cmd_tick(args) -> int:
 
 def cmd_brief(args) -> int:
     root = require_root()
+    if args.kind in ("init", "garden"):
+        print(orchestrate._fill((orchestrate.TEMPLATES / f"brief-{args.kind}.md").read_text(), {"R": orchestrate.ratchet_cmd()}))
+        return 0
+    cfg = config.load(root)
     rid = tasks.run_id(root, args.run)
     if args.kind in ("worker", "judge") and not args.id:
         raise RatchetError(f"`ratchet brief {args.kind}` needs a task id")
-    print(orchestrate.brief(root, config.load(root), rid, args.kind, args.id))
+    print(orchestrate.brief(root, cfg, rid, args.kind, args.id, goal=args.goal or ""))
+    return 0
+
+
+def cmd_start(args) -> int:
+    root = require_root()
+    cfg = config.load(root)
+    goal = " ".join(args.goal)
+    cmd, message = orchestrate.start_command(root, cfg, goal, args.provider, args.model, args.base)
+    if args.dry_run:
+        print(" ".join(cmd) + "\n--- stdin ---\n" + message)
+        return 0
+    proc = subprocess.run(cmd, input=message, text=True, capture_output=True)
+    if proc.returncode != 0:
+        raise RatchetError(f"t3 thread start failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    print(proc.stdout.strip())
+    return 0
+
+
+def cmd_exec_check(args) -> int:
+    """Run a command; fail on a non-zero exit OR on output matching --fail-on (tools that exit 0 on errors)."""
+    import re as _re
+
+    cmd = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not cmd:
+        raise RatchetError("usage: ratchet exec-check --fail-on REGEX -- <command...>")
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    sys.stdout.write(proc.stdout)
+    if proc.returncode != 0:
+        return proc.returncode
+    if args.fail_on:
+        hits = [l for l in proc.stdout.splitlines() if _re.search(args.fail_on, l)]
+        if hits:
+            print(f"[ratchet exec-check] {len(hits)} line(s) matched /{args.fail_on}/; failing", file=sys.stderr)
+            return 1
+    return 0
+
+
+def cmd_profiles(args) -> int:
+    root = require_root()
+    if args.name:
+        prof = profiles.load(root, args.name)
+        print("\n\n".join(f"## {k}\n{v}" if k != "intro" else v for k, v in prof.items()))
+        return 0
+    cfg = config.load(root)
+    for name, path in profiles.available(root).items():
+        print(f"{name:<10} {path}")
+    prods = cfg.get("products") or []
+    print("\nproducts in this repo:" if prods else "\nno products configured (everything uses the library profile)")
+    for p in prods:
+        print(f"  {p.get('name')}: {p.get('profile')}  {', '.join(p.get('paths') or [])}")
     return 0
 
 
@@ -326,7 +385,7 @@ def cmd_status(args) -> int:
         text.append(f"run {run['id']} [{run['status']}]: {run['goal']} — {tasks.summary(run)}")
         for t in run["tasks"]:
             if t["status"] != "done":
-                who = " (worker running)" if t["worker_thread"] else " (judge running)" if t["judge_thread"] else ""
+                who = " (worker running)" if t["worker_thread"] else " (judge running)" if t["judge_threads"] else ""
                 text.append(f"  {t['id']} [{t['status']}] {t['title']}{who}")
     else:
         text.append(f"no run for '{rid}'")
@@ -396,7 +455,7 @@ def cmd_hook(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="ratchet", description="Verification loop for coding agents, built for T3 Code.")
+    p = argparse.ArgumentParser(prog="ratchet", description="Verification loop for coding agents. Built on T3 Code; works with any harness it hosts.")
     p.add_argument("--version", action="version", version=f"ratchet {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -424,10 +483,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp = add("tick", cmd_tick, "coordinator: what to do next (dispatch, merge, review, PR, CI)")
     sp.add_argument("--run")
     sp.add_argument("--json", action="store_true")
-    sp = add("brief", cmd_brief, "self-contained prompt for a worker/judge thread: worker|judge <id>, contract, final")
-    sp.add_argument("kind", choices=["worker", "judge", "contract", "final"])
+    sp = add("brief", cmd_brief, "self-contained prompt for a T3 thread: coordinator|plan|worker <id>|judge <id>|contract|final|init")
+    sp.add_argument("kind", choices=["coordinator", "plan", "worker", "judge", "contract", "final", "init", "garden"])
     sp.add_argument("id", nargs="?")
     sp.add_argument("--run")
+    sp.add_argument("--goal")
+    sp = add("start", cmd_start, "launch a coordinator thread in T3 Code (any provider) for a goal")
+    sp.add_argument("goal", nargs="+")
+    sp.add_argument("--provider", help="T3 provider instance id (claudeAgent, codex, ...)")
+    sp.add_argument("--model")
+    sp.add_argument("--base", help="base ref for the run worktree (default: the repo's base branch)")
+    sp.add_argument("--dry-run", action="store_true")
+    sp = add("exec-check", cmd_exec_check, "run a command; also fail when its output matches --fail-on")
+    sp.add_argument("--fail-on")
+    sp.add_argument("command", nargs=argparse.REMAINDER)
+    sp = add("profiles", cmd_profiles, "list product profiles and this repo's products, or show one")
+    sp.add_argument("name", nargs="?")
     sp = add("release", cmd_release, "free the slot held by a finished worker/judge thread")
     sp.add_argument("--thread", required=True)
     sp.add_argument("--reason")
@@ -444,9 +515,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--run", help="run id (default: current branch)")
     sp.add_argument("--json", action="store_true")
 
-    sp = add("task", cmd_task, "tasks: add|edit|list|next|show|dispatch|start|submit|accept|reject|merge|block|reset")
+    sp = add("task", cmd_task, "tasks: add|edit|list|next|show|dispatch|start|submit|accept|reject|merge|rollback|block|reset")
     sp.add_argument("action", choices=["add", "edit", "list", "next", "show", "dispatch", "start", "submit", "accept",
-                                       "reject", "merge", "block", "reset"])
+                                       "reject", "merge", "rollback", "block", "reset"])
     sp.add_argument("id", nargs="?")
     sp.add_argument("--run")
     sp.add_argument("--role", choices=["worker", "judge"])

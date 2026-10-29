@@ -29,7 +29,11 @@ def run_dir(root: Path, rid: str) -> Path:
 
 
 def load_run(root: Path, rid: str) -> Optional[dict]:
-    return read_json(run_dir(root, rid) / "run.json", None)
+    run = read_json(run_dir(root, rid) / "run.json", None)
+    if run:
+        for t in run["tasks"]:
+            _upgrade_task(t)
+    return run
 
 
 def require_run(root: Path, rid: str) -> dict:
@@ -84,7 +88,7 @@ def _new_task(tid: str, item: dict) -> dict:
         "criteria": _as_list(item.get("criteria")), "verify": _as_list(item.get("verify")),
         "packages": _as_list(item.get("packages")), "deps": _as_list(item.get("deps")),
         "status": "todo", "rounds": 0, "attempts": 0,
-        "worker_thread": None, "judge_thread": None,
+        "worker_thread": None, "judge_threads": [], "votes": [], "rolled_back": False,
         "start_sha": None, "end_sha": None, "branch": None, "merged_sha": None,
         "summary": "", "notes": [], "evidence": [],
     }
@@ -140,7 +144,7 @@ def edit_task(root: Path, rid: str, tid: str, patch: dict) -> dict:
 def get(run: dict, tid: str) -> dict:
     for t in run["tasks"]:
         if t["id"] == tid:
-            return t
+            return _upgrade_task(t)
     raise RatchetError(f"no task {tid} in run {run['id']}")
 
 
@@ -155,10 +159,31 @@ def _note(task: dict, by: str, text: str) -> None:
         task["notes"].append({"at": now(), "by": by, "text": text})
 
 
-def _limits(root: Path) -> dict:
+def _cfg(root: Path) -> dict:
     from .config import load
 
-    return load(root)["limits"]
+    return load(root)
+
+
+def _limits(root: Path) -> dict:
+    return _cfg(root)["limits"]
+
+
+def panel_size(root: Path) -> int:
+    return panel_size_cfg(_cfg(root))
+
+
+def panel_size_cfg(cfg: dict) -> int:
+    return max(1, int((cfg.get("agents") or {}).get("judge_panel", 1)))
+
+
+def _upgrade_task(task: dict) -> dict:
+    if "judge_threads" not in task:  # v0.2 state
+        task["judge_threads"] = [task["judge_thread"]] if task.get("judge_thread") else []
+        task.pop("judge_thread", None)
+    task.setdefault("votes", [])
+    task.setdefault("rolled_back", False)
+    return task
 
 
 def transition(root: Path, rid: str, tid: str, action: str, *, text: str = "", by: str = "",
@@ -180,9 +205,9 @@ def transition(root: Path, rid: str, tid: str, action: str, *, text: str = "", b
         task["attempts"] += 1
     elif action == "dispatch-judge":
         need("review")
-        if task["judge_thread"]:
-            raise RatchetError(f"{tid} already has a judge thread ({task['judge_thread']})")
-        task["judge_thread"] = thread or "manual"
+        if len(task["judge_threads"]) + len(task["votes"]) >= panel_size(root):
+            raise RatchetError(f"{tid} already has its judge panel ({panel_size(root)})")
+        task["judge_threads"].append(thread or f"manual-{len(task['judge_threads']) + 1}")
     elif action == "start":
         need("todo", "doing")
         task["status"] = "doing"
@@ -191,26 +216,42 @@ def transition(root: Path, rid: str, tid: str, action: str, *, text: str = "", b
     elif action == "submit":
         need("doing")
         task.update(status="review", end_sha=head_sha(root), branch=current_branch(root),
-                    summary=text, worker_thread=None, judge_thread=None)
-    elif action == "accept":
+                    summary=text, worker_thread=None, judge_threads=[], votes=[])
+    elif action in ("accept", "reject"):
         need("review")
-        task.update(status="accepted", judge_thread=None)
-    elif action == "reject":
-        need("review")
-        task["rounds"] += 1
-        task.update(status="doing", judge_thread=None, worker_thread=None)
-        limit = int(_limits(root)["judge_rounds"])
-        if task["rounds"] > limit:
-            blocked_reason = f"rejected {task['rounds']} times (limit {limit}); last: {text[:300]}"
+        if thread and thread in task["judge_threads"]:
+            task["judge_threads"].remove(thread)
+        elif task["judge_threads"]:
+            task["judge_threads"].pop(0)
+        task["votes"].append({"verdict": action, "notes": text, "at": now()})
+        panel = panel_size(root)
+        if len(task["votes"]) < panel:
+            action = f"vote-{action}"  # wait for the rest of the panel
+        else:
+            accepts = sum(1 for v in task["votes"] if v["verdict"] == "accept")
+            decided = "accept" if accepts * 2 > len(task["votes"]) else "reject"
+            if panel > 1:
+                text = "\n".join(f"[{v['verdict']}] {v['notes']}" for v in task["votes"]
+                                  if v["verdict"] == decided or decided == "reject")
+            task["judge_threads"], task["votes"] = [], []
+            if decided == "accept":
+                task["status"] = "accepted"
+            else:
+                task["rounds"] += 1
+                task.update(status="doing", worker_thread=None)
+                limit = int(_limits(root)["judge_rounds"])
+                if task["rounds"] > limit:
+                    blocked_reason = f"rejected {task['rounds']} times (limit {limit}); last: {text[:300]}"
+            action = decided
     elif action == "release":
-        # The worker or judge thread ended without recording an outcome.
+        # A worker or judge thread ended without recording an outcome.
         if task["worker_thread"] and (not thread or task["worker_thread"] == thread):
             task["worker_thread"] = None
             limit = int(_limits(root).get("worker_attempts", 3))
             if task["attempts"] >= limit:
                 blocked_reason = f"{task['attempts']} worker attempts ended without a submission; last: {text[:300]}"
-        elif task["judge_thread"] and (not thread or task["judge_thread"] == thread):
-            task["judge_thread"] = None
+        elif task["judge_threads"] and (not thread or thread in task["judge_threads"]):
+            task["judge_threads"].remove(thread if thread in task["judge_threads"] else task["judge_threads"][0])
         else:
             return task  # nothing held by that thread: no-op
     elif action == "merged":
@@ -220,14 +261,17 @@ def transition(root: Path, rid: str, tid: str, action: str, *, text: str = "", b
         need("accepted")
         task.update(status="doing", worker_thread=None)
     elif action == "block":
-        task.update(status="blocked", worker_thread=None, judge_thread=None)
+        task.update(status="blocked", worker_thread=None, judge_threads=[], votes=[])
+    elif action == "rolled-back":
+        task["rolled_back"] = True
     elif action == "reset":
-        task.update(status="todo", rounds=0, attempts=0, worker_thread=None, judge_thread=None)
+        task.update(status="todo", rounds=0, attempts=0, worker_thread=None, judge_threads=[], votes=[],
+                    start_sha=None, end_sha=None, rolled_back=False)
     else:
         raise RatchetError(f"unknown action {action}")
 
     if blocked_reason:
-        task.update(status="blocked", worker_thread=None, judge_thread=None)
+        task.update(status="blocked", worker_thread=None, judge_threads=[], votes=[])
     _note(task, by or action, text)
     save(root, run)
     first = text.splitlines()[0][:160] if text else ""
@@ -236,8 +280,8 @@ def transition(root: Path, rid: str, tid: str, action: str, *, text: str = "", b
     if blocked_reason:
         from .blockers import add as add_blocker
 
-        add_blocker(root, f"{tid} '{task['title']}' blocked: {blocked_reason}", kind="judge" if action == "reject" else "gate",
-                    run=rid)
+        add_blocker(root, f"{tid} '{task['title']}' blocked: {blocked_reason}",
+                    kind="judge" if action == "reject" else "gate", run=rid)
     return task
 
 
@@ -260,7 +304,7 @@ def release_thread(root: Path, rid: str, thread: str, reason: str) -> str:
             progress(root, rid, f"{slot} released: {reason[:160]}")
             return slot
     for t in run["tasks"]:
-        if thread in (t["worker_thread"], t["judge_thread"]):
+        if thread == t["worker_thread"] or thread in t["judge_threads"]:
             role = "worker" if t["worker_thread"] == thread else "judge"
             transition(root, rid, t["id"], "release", text=reason, by="coordinator", thread=thread)
             return f"{t['id']} {role}"
@@ -288,9 +332,13 @@ def format_task(task: dict) -> str:
     if task.get("verify"):
         lines.append("how to verify:")
         lines += [f"  - {v}" for v in task["verify"]]
-    for key in ("branch", "start_sha", "end_sha", "merged_sha", "worker_thread", "judge_thread"):
+    for key in ("branch", "start_sha", "end_sha", "merged_sha", "worker_thread"):
         if task.get(key):
             lines.append(f"{key}: {task[key]}")
+    if task.get("judge_threads"):
+        lines.append(f"judge threads: {', '.join(task['judge_threads'])}")
+    if task.get("votes"):
+        lines.append("panel votes so far: " + ", ".join(v["verdict"] for v in task["votes"]))
     if task.get("rounds"):
         lines.append(f"judge rejections: {task['rounds']}")
     if task.get("summary"):

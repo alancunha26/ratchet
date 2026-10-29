@@ -5,7 +5,8 @@ import json
 import shutil
 from pathlib import Path
 
-from . import checks, config, workspace
+from . import checks, config, profiles, workspace
+from .util import read_json
 from .util import write_json
 
 TEMPLATES = Path(__file__).resolve().parents[2] / "templates"
@@ -66,6 +67,14 @@ def detect(root: Path) -> dict:
     if "go" in kinds:
         checks_cfg["go"] = dict(config.DEFAULT_CHECKS["go"])
         setup.append("go mod download")
+    if "godot" in kinds:
+        binary = profiles.godot_binary()
+        fast = [f"ratchet exec-check --fail-on 'SCRIPT ERROR|Parse Error|^ERROR:' -- {binary} --headless --path . --quit"]
+        if any((root / p.dir / "addons" / "gut").is_dir() for p in pkgs if p.kind == "godot"):
+            fast.append(f"{binary} --headless --path . -s addons/gut/gut_cmdln.gd -gexit")
+        elif any((root / p.dir / "addons" / "gdUnit4").is_dir() for p in pkgs if p.kind == "godot"):
+            fast.append(f"GODOT_BIN=$(command -v {binary}) addons/gdUnit4/runtest.sh -a res://test")
+        checks_cfg["godot"] = {"fast": fast, "full": []}
     if "python" in kinds:
         text = ""
         for p in pkgs:
@@ -99,30 +108,20 @@ def detect(root: Path) -> dict:
         "skip": [],
         "tamper_ignore": [],
         "limits": config.DEFAULTS["limits"],
-        "judge": {"model": "inherit"},
         "run": {"pr": "draft"},
-        "t3": config.DEFAULTS["t3"],
-        "app": dict(config.DEFAULTS["app"], dev=_dev_command(root, pkgs, pm)),
+        "agents": config.DEFAULTS["agents"],
+        "products": profiles.detect(root, pkgs, pm),
     }
     return {"config": cfg, "packages": pkgs, "kinds": kinds, "pm": pm}
-
-
-def _dev_command(root: Path, pkgs: list, pm: str):
-    """A starting guess for app.dev: the root package's dev/start script (init refines it)."""
-    roots = [p for p in pkgs if p.kind == "node" and p.dir == ""]
-    scripts = roots[0].scripts if roots else {}
-    for name in ("dev", "start"):
-        if name in scripts:
-            return f"{pm} run {name}"
-    return None
 
 
 def _claude_section() -> str:
     return (TEMPLATES / "claude-section.md").read_text().strip()
 
 
-def upsert_claude_md(root: Path) -> str:
-    path = root / "CLAUDE.md"
+def upsert_claude_md(root: Path, name: str = "CLAUDE.md") -> str:
+    """Write the ratchet section into CLAUDE.md (Claude Code) or AGENTS.md (Codex, Cursor, OpenCode, Pi, ...)."""
+    path = root / name
     block = f"{MARK_START}\n{_claude_section()}\n{MARK_END}"
     if not path.exists():
         path.write_text(f"# {root.name}\n\n{block}\n")
@@ -151,9 +150,35 @@ def init(root: Path, force: bool = False) -> dict:
     if not judge.exists():
         shutil.copyfile(TEMPLATES / "judge.md", judge)
         wrote.append(".ratchet/judge.md")
-    claude = upsert_claude_md(root)
-    return {"status": status, "wrote": wrote, "claude_md": claude, "kinds": found["kinds"], "pm": found["pm"],
-            "packages": [f"{p.kind}:{p.label} ({p.name})" for p in found["packages"]]}
+    claude = upsert_claude_md(root, "CLAUDE.md")
+    agents = upsert_claude_md(root, "AGENTS.md")
+    t3 = upsert_t3_json(root, found["config"])
+    return {"status": status, "wrote": wrote, "claude_md": claude, "agents_md": agents, "t3_json": t3,
+            "kinds": found["kinds"], "pm": found["pm"],
+            "packages": [f"{p.kind}:{p.label} ({p.name})" for p in found["packages"]],
+            "products": [f"{p['name']} → {p['profile']}" for p in found["config"]["products"]]}
+
+
+def upsert_t3_json(root: Path, cfg: dict) -> str:
+    """Merge ratchet's project scripts into t3.json (committed, so every harness and machine gets them)."""
+    path = root / "t3.json"
+    data = read_json(path, None) or {"$schema": "https://t3.codes/schema/t3.json"}
+    scripts = [s for s in data.get("scripts", []) if not str(s.get("name", "")).startswith("ratchet:")]
+    if cfg.get("setup"):
+        scripts.append({"name": "ratchet: setup", "command": cfg["setup"], "icon": "configure",
+                        "runOnWorktreeCreate": True, "async": False})
+    scripts.append({"name": "ratchet: verify", "command": "ratchet verify --full", "icon": "test"})
+    scripts.append({"name": "ratchet: status", "command": "ratchet status && ratchet tick", "icon": "debug"})
+    for prod in cfg.get("products") or []:
+        if prod.get("profile") in ("web", "api") and prod.get("run"):
+            port_env = prod.get("port_env") or "PORT"
+            url = (prod.get("url") or "http://localhost:{port}/").replace("{port}", "3000")
+            scripts.append({"name": f"ratchet: run {prod['name']}", "command": f"{port_env}=3000 {prod['run']}",
+                            "icon": "play", "previewUrl": url})
+    data["scripts"] = scripts[:50]
+    existed = path.exists()
+    write_json(path, data)
+    return "updated" if existed else "created"
 
 
 def doctor(root: Path, baseline: bool = False) -> tuple[bool, str]:

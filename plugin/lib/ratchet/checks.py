@@ -193,7 +193,9 @@ def machine_slot(cfg: dict) -> Iterator[None]:
 
 
 def _run_job(root: Path, job: Job, log_dir: Path, timeout: int) -> JobResult:
-    env = {**os.environ, "CI": "1", "FORCE_COLOR": "0", "NO_COLOR": "1", "RATCHET_VERIFY": "1"}
+    bin_dir = str(Path(__file__).resolve().parents[2] / "bin")  # so checks can call `ratchet exec-check`
+    env = {**os.environ, "CI": "1", "FORCE_COLOR": "0", "NO_COLOR": "1", "RATCHET_VERIFY": "1",
+           "PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}
     log = log_dir / f"{slug(job.package)}__{slug(job.name)}.log"
     start = time.time()
     try:

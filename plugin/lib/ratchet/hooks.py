@@ -40,7 +40,7 @@ CONTEXT = """[ratchet] This repo runs the ratchet verification loop.
 - Finishing a turn runs a gate: `ratchet verify` on the packages you changed, plus a tamper scan. If it fails you are sent back with the errors. Run `ratchet verify` yourself as you work; results are cached per working state, so it is cheap.
 - Never weaken a check to get through: no skipped/focused/deleted tests, no lint or type suppressions, no edits to .ratchet/config.json, CI workflows or snapshots unless that is the task. If one is genuinely required, `ratchet allow <id> --reason "..."`; the judge reviews every allowance.
 - Log anything that slowed you down (slow checks, flaky tests, missing tools, unclear specs): `ratchet blocker add "..." --kind slow|flaky|tooling|env|spec`.
-- Multi-step work runs as a T3 coordinator: `/ratchet:run <goal>`. Workers and judges are their own T3 threads; `ratchet status` shows the run."""
+- Multi-step work runs as a T3 coordinator: `/ratchet:run <goal>` here, or `ratchet start "<goal>"` from a shell (any harness). `ratchet status` shows the run; `ratchet profiles` shows how each product is exercised."""
 
 
 def session_start(payload: dict) -> None:

@@ -28,7 +28,7 @@ def node_script(code: int, message: str = "") -> str:
 class Fixture:
     """An npm-workspaces monorepo: core <- app, plus an unrelated pkg `other`."""
 
-    def __init__(self) -> None:
+    def __init__(self, agents: dict = None, web_deps: bool = False) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "mono"
         self.root.mkdir()
@@ -38,16 +38,20 @@ class Fixture:
         sh("git init -q -b main && git config user.email t@t && git config user.name t", self.root)
         self.write("package.json", json.dumps({"name": "mono", "private": True, "workspaces": ["packages/*"]}))
         self.pkg("core", {})
-        self.pkg("app", {"core": "*"})
+        self.pkg("app", {"core": "*", **({"vite": "^5"} if web_deps else {})}, dev=web_deps)
         self.pkg("other", {})
         self.ratchet("init")
+        if agents:
+            cfg = json.loads((self.root / ".ratchet/config.json").read_text())
+            cfg["agents"].update(agents)
+            self.write(".ratchet/config.json", json.dumps(cfg))
         sh("git add -A && git commit -qm init && git switch -qc feature", self.root)
 
-    def pkg(self, name: str, deps: dict, test_code: int = 0) -> None:
-        self.write(f"packages/{name}/package.json", json.dumps({
-            "name": name, "dependencies": deps,
-            "scripts": {"lint": node_script(0, "lint ok"), "test": node_script(test_code, f"{name} tests")},
-        }))
+    def pkg(self, name: str, deps: dict, test_code: int = 0, dev: bool = False) -> None:
+        scripts = {"lint": node_script(0, "lint ok"), "test": node_script(test_code, f"{name} tests")}
+        if dev:
+            scripts["dev"] = "node server.js"
+        self.write(f"packages/{name}/package.json", json.dumps({"name": name, "dependencies": deps, "scripts": scripts}))
         self.write(f"packages/{name}/index.js", f"module.exports = '{name}';\n")
 
     def write(self, rel: str, text: str) -> None:
@@ -86,6 +90,7 @@ class RatchetTest(unittest.TestCase):
         self.assertEqual(cfg["checks"]["node"]["fast"], ["script:lint", "script:test"])
         self.assertEqual(cfg["setup"], "npm install")
         self.assertIn("ratchet:start", (self.f.root / "CLAUDE.md").read_text())
+        self.assertIn("ratchet:start", (self.f.root / "AGENTS.md").read_text())
         self.assertTrue((self.f.root / ".ratchet/judge.md").exists())
 
     def test_affected_follows_dependents(self) -> None:
@@ -238,10 +243,10 @@ class RatchetTest(unittest.TestCase):
 
 
 class OrchestrationTest(unittest.TestCase):
-    """Drive the coordinator state machine the way T3 threads would, with real worktrees."""
+    """Parallel mode (max_parallel 2): worker and judge threads in their own worktrees."""
 
     def setUp(self) -> None:
-        self.f = Fixture()
+        self.f = Fixture(agents={"max_parallel": 2})
         self.r = self.f.ratchet
         self.r("run", "start", "--goal", "ship v2", check=True)
         self.r("task", "add", "--from-json", "-", check=True, stdin=json.dumps([
@@ -279,7 +284,8 @@ class OrchestrationTest(unittest.TestCase):
         # Two disjoint tasks go out in parallel; T3 waits for T1 to merge.
         acts = self.tick()
         self.assertEqual([(a["do"], a.get("task")) for a in acts], [("dispatch_worker", "T1"), ("dispatch_worker", "T2")])
-        self.assertEqual(acts[0]["isolation"], "worktree")
+        self.assertEqual(acts[0]["delegate"]["isolation"], "worktree")
+        self.assertEqual(acts[0]["delegate"]["mode"], "async")
         brief = self.r("brief", "worker", "T1", "--run", "feature", check=True).stdout
         self.assertIn(str(BIN), brief)
         self.assertIn("core exports v2", brief)
@@ -297,8 +303,8 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual([(a["do"], a.get("task")) for a in acts], [("dispatch_judge", "T1"), ("dispatch_worker", "T2")])
         judge_brief = self.r("brief", "judge", "T1", "--run", "feature", check=True).stdout
         self.assertIn(f"git checkout --detach {sha1}", judge_brief)
-        self.assertIn("preview_open", judge_brief)
         self.assertIn("Judge calibration", judge_brief)
+        self.assertIn("library", judge_brief)  # no products configured: library profile guide
 
         # The judge accepts from a detached checkout of the submitted commit.
         self.r("task", "dispatch", "T1", "--role", "judge", "--thread", "j1", check=True)
@@ -395,6 +401,155 @@ class OrchestrationTest(unittest.TestCase):
 
     def test_port_is_free_number(self) -> None:
         self.assertTrue(1024 < int(self.r("port", check=True).stdout) < 65536)
+
+
+class SharedCheckoutTest(unittest.TestCase):
+    """Default mode: one task at a time in the run's checkout (one dependency install per run)."""
+
+    def setUp(self) -> None:
+        self.f = Fixture(agents={"contract_review": False})
+        self.r = self.f.ratchet
+        self.r("run", "start", "--goal", "ship v2", check=True)
+        self.r("task", "add", "--from-json", "-", check=True, stdin=json.dumps([
+            {"title": "core v2", "criteria": ["core exports v2"], "packages": ["packages/core"]},
+            {"title": "other v2", "criteria": ["other exports v2"], "packages": ["packages/other"]},
+        ]))
+
+    def tearDown(self) -> None:
+        self.f.close()
+
+    def tick(self) -> list:
+        return json.loads(self.r("tick", "--json", check=True).stdout)["actions"]
+
+    def commit_work(self, tid: str, rel: str, text: str) -> str:
+        self.r("task", "start", tid, check=True)
+        (self.f.root / rel).write_text(text)
+        sh(f"git add -A && git commit -qm {tid}", self.f.root)
+        return sh("git rev-parse HEAD", self.f.root).strip()
+
+    def test_one_task_at_a_time_in_the_run_checkout(self) -> None:
+        acts = self.tick()
+        self.assertEqual([(a["do"], a.get("task")) for a in acts], [("dispatch_worker", "T1")])
+        self.assertEqual(acts[0]["delegate"]["isolation"], "shared")
+        self.assertIn("git stash", acts[0]["precondition"])
+        self.assertIn("run's own checkout", self.r("brief", "worker", "T1", check=True).stdout)
+        self.r("task", "dispatch", "T1", "--role", "worker", "--thread", "w1", check=True)
+        start = sh("git rev-parse HEAD", self.f.root).strip()
+        sha = self.commit_work("T1", "packages/core/index.js", "module.exports = 'v2';\n")
+        self.r("task", "submit", "T1", "--summary", "done", check=True)
+        acts = self.tick()
+        self.assertEqual([(a["do"], a.get("task")) for a in acts], [("dispatch_judge", "T1")])  # T2 waits
+        judge = self.r("brief", "judge", "T1", check=True).stdout
+        self.assertIn(f"Confirm `git rev-parse HEAD` is `{sha}`", judge)
+        self.assertIn(f"git diff --stat {start} {sha}", judge)
+        self.r("task", "dispatch", "T1", "--role", "judge", "--thread", "j1", check=True)
+        self.r("task", "accept", "T1", "--notes", "ok", check=True)
+        self.assertEqual(self.tick()[0]["do"], "merge")
+        self.r("task", "merge", "T1", check=True)
+        self.assertEqual([(a["do"], a.get("task")) for a in self.tick()], [("dispatch_worker", "T2")])
+
+    def test_blocked_task_is_rolled_back_before_the_next(self) -> None:
+        self.r("task", "dispatch", "T1", "--role", "worker", "--thread", "w1", check=True)
+        start = sh("git rev-parse HEAD", self.f.root).strip()
+        self.commit_work("T1", "packages/core/index.js", "module.exports = 'half done';\n")
+        self.r("task", "block", "T1", "--reason", "spec contradicts itself", check=True)
+        acts = self.tick()
+        self.assertEqual([(a["do"], a.get("task")) for a in acts], [("rollback", "T1")])
+        self.r("task", "rollback", "T1", check=True)
+        self.assertEqual(sh("git rev-parse HEAD", self.f.root).strip(), start)
+        self.assertEqual([(a["do"], a.get("task")) for a in self.tick()], [("dispatch_worker", "T2")])
+
+    def test_judge_panel_majority_decides(self) -> None:
+        cfg = json.loads((self.f.root / ".ratchet/config.json").read_text())
+        cfg["agents"]["judge_panel"] = 3
+        sh("git switch -q main", self.f.root)
+        self.f.write(".ratchet/config.json", json.dumps(cfg))
+        sh("git commit -qam panel && git switch -q feature && git merge -q main", self.f.root)
+        self.r("task", "dispatch", "T1", "--role", "worker", "--thread", "w1", check=True)
+        self.commit_work("T1", "packages/core/index.js", "module.exports = 'v2';\n")
+        self.r("task", "submit", "T1", "--summary", "done", check=True)
+        acts = self.tick()
+        self.assertEqual(acts[0]["count"], 3)
+        for i in range(3):
+            self.r("task", "dispatch", "T1", "--role", "judge", "--thread", f"j{i}", check=True)
+        self.assertNotEqual(self.r("task", "dispatch", "T1", "--role", "judge", "--thread", "j4").returncode, 0)
+        out = self.r("task", "accept", "T1", "--notes", "looks right", "--thread", "j0", check=True).stdout
+        self.assertIn("1/3 votes", out)
+        self.r("task", "reject", "T1", "--notes", "jump feels floaty", "--thread", "j1", check=True)
+        self.r("task", "accept", "T1", "--notes", "matches the reference", "--thread", "j2", check=True)
+        self.assertEqual(json.loads(self.r("task", "show", "T1", "--json").stdout)["status"], "accepted")
+
+
+class ProductsTest(unittest.TestCase):
+    def test_init_detects_products_writes_agents_md_and_t3_json(self) -> None:
+        f = Fixture(web_deps=True)
+        try:
+            cfg = json.loads((f.root / ".ratchet/config.json").read_text())
+            web = [p for p in cfg["products"] if p["profile"] == "web"]
+            self.assertEqual(web[0]["name"], "app")
+            self.assertEqual(web[0]["run"], "cd packages/app && npm run dev")
+            self.assertIn("ratchet:start", (f.root / "AGENTS.md").read_text())
+            scripts = {s["name"]: s for s in json.loads((f.root / "t3.json").read_text())["scripts"]}
+            self.assertEqual(scripts["ratchet: setup"]["runOnWorktreeCreate"], True)
+            self.assertEqual(scripts["ratchet: setup"]["async"], False)
+            self.assertEqual(scripts["ratchet: run app"]["previewUrl"], "http://localhost:3000/")
+            # a task touching the web package gets the web guide; one touching core gets the library guide
+            r = f.ratchet
+            r("run", "start", "--goal", "g", check=True)
+            r("task", "add", "--from-json", "-", check=True, stdin=json.dumps([
+                {"title": "ui", "criteria": ["c"], "packages": ["packages/app"]},
+                {"title": "lib", "criteria": ["c"], "packages": ["packages/core"]}]))
+            web_brief = r("brief", "worker", "T1", check=True).stdout
+            self.assertIn("preview_open", web_brief)
+            self.assertIn("cd packages/app && npm run dev", web_brief)
+            self.assertIn("tiny consumer", r("brief", "worker", "T2", check=True).stdout)
+            self.assertIn("Good criteria", r("brief", "plan", check=True).stdout.replace("What good criteria", "Good criteria"))
+            self.assertIn("web", r("profiles", check=True).stdout)
+        finally:
+            f.close()
+
+    def test_godot_project_is_a_package_with_output_scanning_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "game" / "addons" / "gut").mkdir(parents=True)
+            (root / "game" / "project.godot").write_text('config/name="Skate"\nrun/main_scene="res://main.tscn"\n')
+            sh("git init -q -b main && git config user.email t@t && git config user.name t", root)
+            subprocess.run([sys.executable, str(BIN), "init"], cwd=root, check=True, capture_output=True)
+            cfg = json.loads((root / ".ratchet/config.json").read_text())
+            self.assertIn("exec-check", cfg["checks"]["godot"]["fast"][0])
+            self.assertIn("gut_cmdln.gd", cfg["checks"]["godot"]["fast"][1])
+            prod = cfg["products"][0]
+            self.assertEqual((prod["profile"], prod["name"], prod["main_scene"]), ("godot", "Skate", "res://main.tscn"))
+
+    def test_exec_check_fails_on_matching_output_even_with_exit_zero(self) -> None:
+        def run(*args):
+            return subprocess.run([sys.executable, str(BIN), "exec-check", *args], capture_output=True, text=True)
+        self.assertEqual(run("--fail-on", "SCRIPT ERROR", "--", "echo", "SCRIPT ERROR: bad").returncode, 1)
+        self.assertEqual(run("--fail-on", "SCRIPT ERROR", "--", "echo", "all good").returncode, 0)
+        self.assertEqual(run("--", "false").returncode, 1)
+
+    def test_start_builds_a_t3_thread_start_call(self) -> None:
+        f = Fixture()
+        try:
+            fake = Path(f.tmp.name) / "bin"
+            fake.mkdir()
+            (fake / "t3").write_text("#!/bin/sh\necho fake\n")
+            (fake / "t3").chmod(0o755)
+            f.env["PATH"] = f"{fake}:{f.env['PATH']}"
+            out = f.ratchet("start", "Add SSO to the dashboard", "--provider", "codex", "--dry-run", check=True).stdout
+            self.assertIn("thread start", out)
+            self.assertIn("--worktree main --branch ratchet/add-sso-to-the-dashboard", out)
+            self.assertIn("--provider codex", out)
+            self.assertIn("brief coordinator", out)
+        finally:
+            f.close()
+
+    def test_v02_config_is_upgraded(self) -> None:
+        up = config._upgrade({"t3": {"max_parallel": 3}, "judge": {"model": "sonnet"},
+                              "app": {"dev": "pnpm dev", "ui_paths": ["web/**"]}})
+        self.assertEqual(up["agents"]["max_parallel"], 3)
+        self.assertEqual(up["agents"]["judge"]["model"], "sonnet")
+        self.assertEqual(up["products"][0]["run"], "pnpm dev")
 
 
 class DiscoveryTest(unittest.TestCase):
