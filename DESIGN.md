@@ -71,12 +71,17 @@ AGENTS.md / CLAUDE.md   the ratchet section, which every harness reads
 
 Known stacks (web, API, CLI, library, mobile, Godot, Unity...) have **starter kits**: examples of checks, exercises and tooling that the generator reads and adapts. They are never imposed at runtime. A kit can include on-demand tools (npx, uvx, binaries) for verifying when the project doesn't have its own yet, but the goal is always to move the project onto committed tooling it owns.
 
-## Milestones
+## Milestones (status 2026-10-29: M1–M5 built; see README "Verified so far")
 
 - **M1: kernel core.** Run state, `tick`, gates with per-test baselines (JUnit), the fail-on-base check, fake-pass guards, tamper detection, merge gate, briefs, T3 orchestration. Harness loading from `.ratchet/harness.json` and `verify/`.
 - **M2: `ratchet init`.** Discovery, validation with planted breaks, harness generation as a PR, readiness.
 - **M3: `ratchet new`.** Walking skeleton for a fresh repo, with starter kits for a first set of stacks.
 - **M4: evolution.** Gardener, harness tasks, `ratchet upgrade` migrations, readiness-driven increments.
 - **M5: judging depth.** Exercise scripts with reward files, base-vs-change captures (pixel diffs, relative budgets), mutation of changed lines, the VLM pairwise protocol, judge panels.
+
+Implementation map: kernel = `verify.py` (per-test gates), `proof.py` (f2p, mutation, canary), `basestate.py`
+(in-place base), `runner.py` (process-group execution), `store.py` (results + carry-forward), `cycle.py`/`state.py`
+(tick, merge gate, briefs), `tamper.py`. Generation = `kits.py`, `generate.py`, `newproject.py`. Evolution =
+`evolve.py`. Evidence = `exercise.py`, `imagediff.py`. Adapters = `hooks.py` + `plugin/skills`.
 
 See `LESSONS.md` for what the archived v0.1–v0.3 taught us (branch `archive/v0.3`).
