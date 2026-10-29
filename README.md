@@ -33,11 +33,11 @@ ratchet follows what has worked for teams running agents at scale:
 
 | Principle | Source | Where it lives in ratchet |
 |---|---|---|
-| Deterministic checks gate everything. They switch on from repo contents and return only the error lines that matter. | Spotify's background agents; Huntley's "backpressure" | `ratchet verify`, Stop/SubagentStop hooks |
-| Agents grade their own work too kindly, so a separate judge tuned for skepticism decides. | Anthropic, harness design for long-running apps | `ratchet:judge` agent, `.ratchet/judge.md` |
+| Deterministic checks gate everything. They switch on from repo contents and return only the error lines that matter. | Spotify's background agents; Huntley's "backpressure" | `ratchet verify`, the Stop hook, `ratchet task merge` |
+| Agents grade their own work too kindly, so a separate judge tuned for skepticism decides. | Anthropic, harness design for long-running apps | judge threads (T3 browser evidence), `.ratchet/judge.md` |
 | Agree on how success is checked before writing code. | Anthropic's sprint contracts | task `criteria` + `verify`, judge "contract" mode |
 | State lives in files and git, not in the conversation. | Anthropic, effective harnesses | runs/tasks/progress under `.git/ratchet/` |
-| One task per fresh context. Keep the structure simple. | Ralph loop; Cursor's planner/worker/judge | `ratchet:run` coordinator + `ratchet:worker` |
+| One task per fresh context. Keep the structure simple. | Ralph loop; Cursor's planner/worker/judge | a T3 coordinator thread + a worker thread per task |
 | Cap the retries, then escalate. | Stripe Minions (2 CI rounds) | `limits.*`, blockers |
 | Block attempts to pass by weakening checks. | Anthropic, Arize | `ratchet tamper` / `ratchet allow` |
 | Turn friction into harness fixes. | OpenAI harness engineering; Theo's "ask what blocks them" | `ratchet blocker`, `ratchet stats`, `ratchet:garden` |
