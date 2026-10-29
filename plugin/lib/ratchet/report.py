@@ -52,7 +52,7 @@ def markdown(run: dict) -> str:
         lines += [f"- **{tid}**: {text.splitlines()[0][:300]}" for tid, text in seen.items()]
     if run.get("final_notes"):
         lines += ["", "### Final review", run["final_notes"][:1500]]
-    lines += ["", "_Verified by [ratchet](https://github.com/Cosmyk-Labs/ratchet): every task passed the "
+    lines += ["", "_Verified by [ratchet](https://github.com/alancunha26/ratchet): every task passed the "
               "deterministic gate and an independent judge._"]
     return "\n".join(lines)
 
