@@ -64,6 +64,7 @@ STACKS: dict = {
                 "printf '{\"pass\": %s, \"metrics\": {\"status\": %s, \"bytes\": %s}}\\n' \"$pass\" \"$code\" \"$(wc -c < \"$RATCHET_OUT/page.html\" 2>/dev/null || echo 0)\" > \"$RATCHET_OUT/reward.json\"\n",
         },
         "exercises": [{"name": "smoke", "run": "bash .ratchet/exercise/web/smoke.sh", "budgets": {"bytes": {"max_ratio": 3}}}],
+        "product": {"ready_text": "listening", "run": "npm run dev"},
     },
     "node-cli": {
         "describe": "Node.js CLI (bin entry, golden-output exercise, node:test)",
@@ -203,9 +204,15 @@ def create(dest: Path, stack: str, name: str = None, prove: bool = True) -> dict
     plan = generate.plan(dest)
     info = generate.write(dest, plan)
     h = harness.load(dest)
-    if spec["exercises"] and h["products"]:
-        h["products"][0]["exercises"] = spec["exercises"]
+    if h["products"]:
+        h["products"][0].update(spec.get("product", {}))
+        if spec["exercises"]:
+            h["products"][0]["exercises"] = spec["exercises"]
         harness.save(dest, h)
+        from . import kits
+
+        guide = dest / h["products"][0]["exercise"]
+        guide.write_text(kits.render_exercise(h["products"][0]))
     missing = [r for r in spec["requires"] if not _have(r)]
     subprocess.run(["git", "add", "-A"], cwd=str(dest), check=True)
     subprocess.run(["git", "-c", "user.name=ratchet", "-c", "user.email=ratchet@localhost", "commit", "-q", "-m",

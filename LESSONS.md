@@ -17,6 +17,16 @@ The code is archived on branch `archive/v0.3` (tag `v0.3.0-archive`). It's worth
 - **`exec-check --fail-on`** for tools that exit 0 on errors (Godot).
 - **End-to-end tests** that build throwaway monorepos and worktrees and drive the real CLI. They caught the real bugs.
 
+## Process hygiene (learned the hard way, 2026-10-29)
+
+- **Never** run a check with `subprocess.run(shell=True, timeout=...)`. On timeout it kills only the shell. The test runner's children were reparented to `systemd --user` and spun at 100% CPU: mutants with infinite loops leaked a process every 20–30 s until the machine reached about 96°C.
+- Every command now goes through `runner.run_group`:
+  - it runs in a new session;
+  - on timeout, the whole group gets SIGTERM, then SIGKILL, and so does the full process tree, which catches descendants that started their own session, such as nested ratchet runs;
+  - after a normal exit, leftovers in the group are reaped.
+- A mutant that hangs counts as killed. `ProcessHygieneTest` guards all of this.
+- Don't run several mutation or probe runs at the same time on a dev machine.
+
 ## What didn't (avoid)
 
 - **A universal framework.** Built-in check kinds and product profiles became runtime rules ratchet imposed, and every new stack needed more of them.
