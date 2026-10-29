@@ -22,7 +22,7 @@ from typing import Optional
 from . import imagediff
 from .basestate import at_base
 from .report import free_port
-from .runner import BIN_DIR, env_for
+from .runner import env_for, run_group
 from .util import RatchetError, log_event, read_json, slug, state_dir, write_json
 
 
@@ -48,12 +48,7 @@ def _run_once(root: Path, ex: dict, phase: str, tag: str) -> dict:
     out.mkdir(parents=True)
     env = env_for(root, out, {"PORT": str(free_port()), "RATCHET_PHASE": phase})
     start = time.time()
-    try:
-        proc = subprocess.run(ex["run"], shell=True, cwd=str(root), env=env, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, errors="replace", timeout=int(ex.get("timeout", 600)))
-        code, log = proc.returncode, proc.stdout
-    except subprocess.TimeoutExpired:
-        code, log = 124, "[ratchet] exercise timed out"
+    code, log = run_group(ex["run"], str(root), env, int(ex.get("timeout", 600)))
     (out / "exercise.log").write_text(log)
     reward = read_json(out / "reward.json", None) or {}
     return {"phase": phase, "code": code, "seconds": round(time.time() - start, 2), "dir": str(out),

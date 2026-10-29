@@ -85,7 +85,7 @@ def node_checks(root: Path, pkg: workspace.Package, pm: str, scope: list) -> lis
                              canary={"path": f"{base}test/__ratchet_canary.spec.js",
                                      "content": "it('ratchet canary', () => { throw new Error('ratchet canary') })\n"}))
     elif "node --test" in test_script:
-        out.append(CheckSpec(f"{pre}test", _cd(pkg) + 'node --test --test-reporter=junit --test-reporter-destination="$RATCHET_OUT/junit.xml"',
+        out.append(CheckSpec(f"{pre}test", _cd(pkg) + 'node --test --test-timeout=120000 --test-reporter=junit --test-reporter-destination="$RATCHET_OUT/junit.xml"',
                              scope=scope, kit="node-test", mutate=mutate,
                              canary={"path": f"{base}__ratchet_canary.test.mjs",
                                      "content": "import test from 'node:test'\n" + JS_CANARY}))

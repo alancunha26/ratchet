@@ -82,6 +82,46 @@ def node_core_repo(extra_checks: list = None) -> Repo:
     return repo
 
 
+# ---------- process hygiene ----------
+
+class ProcessHygieneTest(unittest.TestCase):
+    """A check that never finishes must not leave anything running after its timeout."""
+
+    def _alive(self, marker: str) -> list:
+        out = subprocess.run(["pgrep", "-f", marker[0] + "[" + marker[1] + "]" + marker[2:]], capture_output=True, text=True).stdout.split()
+        return [p for p in out if int(p) != os.getpid()]
+
+    def test_timeout_kills_the_whole_tree_including_new_sessions(self) -> None:
+        from ratchet import runner
+        marker = f"ratchet-leak-probe-{os.getpid()}"
+        loop = f"{sys.executable} -c 'import sys; sys.argv; [None for _ in iter(int, 1)]' {marker}"
+        detached = (f"{sys.executable} -c \"import subprocess, sys, time; "
+                    f"subprocess.Popen([sys.executable, '-c', 'while True: pass', '{marker}-s'], start_new_session=True); "
+                    f"time.sleep(600)\"")
+        cmd = f"{loop} & {loop} & {detached}"
+        try:
+            start = __import__("time").time()
+            code, out = runner.run_group(cmd, "/tmp", dict(os.environ), timeout=2)
+            self.assertEqual(code, 124)
+            self.assertLess(__import__("time").time() - start, 15)
+            __import__("time").sleep(0.5)
+            self.assertEqual(self._alive(marker), [], "processes survived the timeout")
+        finally:
+            subprocess.run(["pkill", "-9", "-f", marker])
+
+    def test_normal_exit_reaps_background_leftovers(self) -> None:
+        from ratchet import runner
+        marker = f"ratchet-bg-probe-{os.getpid()}"
+        try:
+            code, _ = runner.run_group(f"{sys.executable} -c 'while True: pass' {marker} & echo started", "/tmp",
+                                       dict(os.environ), timeout=10)
+            self.assertEqual(code, 0)
+            __import__("time").sleep(0.5)
+            self.assertEqual(self._alive(marker), [])
+        finally:
+            subprocess.run(["pkill", "-9", "-f", marker])
+
+
 # ---------- results ----------
 
 class ResultsTest(unittest.TestCase):

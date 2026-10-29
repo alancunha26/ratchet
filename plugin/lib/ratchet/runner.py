@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from contextlib import contextmanager
@@ -92,6 +93,106 @@ def machine_slot(h: dict) -> Iterator[None]:
             fh.close()
 
 
+def _descendants(pid: int) -> list:
+    """Every live descendant of pid (portable: `ps`, works on Linux and macOS)."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             text=True).stdout
+    except OSError:
+        return []
+    children: dict = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    found, stack = [], [pid]
+    while stack:
+        for c in children.get(stack.pop(), []):
+            found.append(c)
+            stack.append(c)
+    return found
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _signal_all(pgid: int, pids: list, sig: int) -> None:
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+    for pid in pids:  # descendants that started their own session (e.g. a nested ratchet run)
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _kill_group(pgid: int, grace: float = 3.0, tree_of: Optional[int] = None) -> None:
+    """SIGTERM the process group (and the process tree of `tree_of`), then SIGKILL survivors after `grace`."""
+    pids = _descendants(tree_of) if tree_of else []
+    if not _group_alive(pgid) and not any(_alive(p) for p in pids):
+        return
+    _signal_all(pgid, pids, signal.SIGTERM)
+    deadline = time.time() + grace
+    while time.time() < deadline:
+        if not _group_alive(pgid) and not any(_alive(p) for p in pids):
+            return
+        time.sleep(0.05)
+    _signal_all(pgid, pids + _descendants(tree_of) if tree_of else pids, signal.SIGKILL)
+
+
+def run_group(cmd: str, cwd: str, env: dict, timeout: int) -> tuple[int, str]:
+    """Run a shell command in its own session/process group and always reap the whole group.
+
+    `subprocess.run(shell=True, timeout=...)` only kills the shell: grandchildren (test runners and the
+    processes they spawn, e.g. a mutant stuck in an infinite loop) would be reparented and spin forever.
+    Here the group (plus the process tree, for descendants that started their own session) is killed on
+    timeout, and the group is also reaped after a normal exit, so no background leftovers survive.
+    """
+    import threading
+
+    proc = subprocess.Popen(cmd, shell=True, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, errors="replace", start_new_session=True)
+    pgid = proc.pid  # start_new_session: the child leads a new session and process group
+    chunks: list = []
+    reader = threading.Thread(target=lambda: chunks.append(proc.stdout.read()), daemon=True)
+    reader.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_group(pgid, tree_of=proc.pid)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:  # pragma: no cover
+            pass
+    except BaseException:
+        _kill_group(pgid, grace=0.5, tree_of=proc.pid)
+        raise
+    finally:
+        _kill_group(pgid, grace=1.0)  # background leftovers hold the pipe open; reap them so output ends
+        reader.join(timeout=10)
+    out = "".join(c for c in chunks if c)
+    if timed_out:
+        return 124, out + f"\n[ratchet] timed out after {timeout}s; killed the process group"
+    return proc.returncode, out
+
+
 def env_for(root: Path, out_dir: Path, extra: Optional[dict] = None) -> dict:
     return {**os.environ, "CI": "1", "FORCE_COLOR": "0", "NO_COLOR": "1", "RATCHET": "1",
             "RATCHET_OUT": str(out_dir), "RATCHET_ROOT": str(root),
@@ -107,14 +208,7 @@ def run_check(root: Path, h: dict, check: Check, tag: str, timeout: Optional[int
     log = out_dir.parent / f"{slug(check.name)}.log"
     timeout = int(timeout or check.timeout or h["limits"]["check_timeout_sec"])
     start = time.time()
-    try:
-        proc = subprocess.run(check.run, shell=True, cwd=str(root / check.cwd), env=env_for(root, out_dir),
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
-                              timeout=timeout)
-        out, code = proc.stdout, proc.returncode
-    except subprocess.TimeoutExpired as exc:
-        out = (exc.stdout if isinstance(exc.stdout, str) else "") + f"\n[ratchet] timed out after {timeout}s"
-        code = 124
+    code, out = run_group(check.run, str(root / check.cwd), env_for(root, out_dir), timeout)
     log.write_text(f"$ {check.run}\n(cwd: {check.cwd})\n\n{out}")
     res = R.collect(out_dir, check.results)
     return Run(check.name, code, round(time.time() - start, 2), str(log), res, "" if code == 0 else excerpt(out))
